@@ -72,7 +72,7 @@ def item_method(fn):
     return fn
 
 
-def job(lock=None, lock_queue_size=None, logs=False, process=False, pipes=None, check_pipes=True, transient=False,
+def job(lock=None, lock_queue_size=None, logs=None, process=False, pipes=None, check_pipes=True, transient=False,
         description=None, abortable=False):
     """
     Flag method as a long running job. This must be the first decorator to be applied (meaning that it must be specified
@@ -110,9 +110,13 @@ def job(lock=None, lock_queue_size=None, logs=False, process=False, pipes=None, 
 
         Default value is `None` meaning that lock queue is infinite.
 
-    :param logs: If `True` then `job.logs_fd` object will be available. It is an unbuffered file opened in binary mode;
-        the job can write it's logs there and they will be available in the `/var/log/jobs/{id}.log` file. By default
-        no such file is opened.
+    :param logs: Allow job to write logs a `job.logs_fd` object. The backend for logging is configurable. It
+        can be written as either `MEMORY` in which case the logging info is stored in a dequeue or `FILE` to have
+        the logs file-backed. In the latter case, it is an unbuffered file opened in binary mode; the job can write
+        it's logs there and they will be available in the `/var/log/jobs/{id}.log` file.
+
+        Valid options are `MEMORY` and `FILE`.
+        By default no extra logging is performed.
 
     :param process: If `True` then the job body is called in a separate process. By default, job body is executed in the
         main middleware process.

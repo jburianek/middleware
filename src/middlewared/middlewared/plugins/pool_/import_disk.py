@@ -22,7 +22,7 @@ class PoolService(Service):
         Str('dst_path')
     )
     @returns()
-    @job(lock=lambda args: 'volume_import', logs=True, abortable=True)
+    @job(lock=lambda args: 'volume_import', logs='MEMORY:20', abortable=True)
     async def import_disk(self, job, device, fs_type, fs_options, dst_path):
         """
         Import a disk, by copying its content to a pool.

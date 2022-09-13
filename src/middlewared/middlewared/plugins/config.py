@@ -247,7 +247,7 @@ class ConfigService(Service):
 
     @accepts(Dict('options', Bool('reboot', default=True)))
     @returns()
-    @job(lock='config_reset', logs=True)
+    @job(lock='config_reset', logs='FILE')
     def reset(self, job, options):
         """
         Reset database to configuration defaults.

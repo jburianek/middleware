@@ -438,7 +438,7 @@ class ReplicationService(CRUDService):
 
     @item_method
     @accepts(Int("id"), Bool("really_run", default=True, hidden=True))
-    @job(logs=True)
+    @job(logs='FILE')
     async def run(self, job, id, really_run):
         """
         Run Replication Task of `id`.

@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import copy
 from datetime import datetime
 import enum
@@ -265,7 +265,9 @@ class Job:
 
         self.logs_path = None
         self.logs_fd = None
+        self.logs_cnt = 0
         self.logs_excerpt = None
+        self.logs_fd_write = NotImplemented
 
         if self.options["check_pipes"]:
             for pipe in self.options["pipes"]:
@@ -276,6 +278,10 @@ class Job:
                 self.description = self.options["description"](*args)
             except Exception:
                 logger.error("Error setting job description", exc_info=True)
+
+        if self.options['logs'] is True:
+            middleware.logger.warning('%s: method uses deprecated logging option', method_name)
+            self.options['logs'] = 'FILE'
 
     def check_pipe(self, pipe):
         """
@@ -466,10 +472,43 @@ class Job:
         if self.progress['percent'] != 100:
             self.set_progress(100, '')
 
+    async def __write_to_dequeue_log(self, data):
+        if self.logs_fd['target'] is self.logs_fd['head']:
+             if len(self.logs_fd['head']) == self.logs_fd['head'].maxlen:
+                self.logs_fd['tail'] = deque(self.logs_fd['head'].max_len)
+                self.logs_fd['target'] = self.logs_fd['tail']
+
+        self.logs_fd['target'].append(data.decode())
+        self.logs_cnt += 1
+
+    async def __write_to_file_log(self, data):
+        await self.middleware.run_in_thread(self.logs_fd.write, data)
+
     def _logs_path(self):
+        if self.options["logs"].startswith("MEMORY"):
+            self.logs_fd_write = self.__write_to_dequeue_log
+            return self.options['logs']
+
+        if self.options["logs"] != 'FILE':
+            raise ValueError(f'{self.options["logs"]}: invalid log target.')
+
+        self.logs_fd_write = self.__write_to_file_log
         return os.path.join(LOGS_DIR, f"{self.id}.log")
 
     async def __close_logs(self):
+        if isinstance(self.logs_fd, dict):
+            head = self.logs_fd['head']
+            tail = self.logs_fd['tail']
+
+            if tail:
+                    excerpt = "%s... %d more lines ...\n%s" % ("".join(head), self.logs_cnt - head.maxlen, "".join(tail))
+            else:
+                    excerpt = "".join(head)
+
+            self.middleware.logger.debug("XXX: excerpt: %s", excerpt)
+            self.logs_excerpt = excerpt
+            return
+
         if self.logs_fd:
             self.logs_fd.close()
 
@@ -550,6 +589,7 @@ class Job:
 
     @staticmethod
     async def receive(middleware, job_dict, logs):
+        middleware.logger.debug("XXX: job_dict", job_dict)
         service_name, method_name = job_dict['method'].rsplit(".", 1)
         serviceobj = middleware._services[service_name]
         methodobj = getattr(serviceobj, method_name)
@@ -569,13 +609,7 @@ class Job:
         job.time_finished = job_dict['time_finished']
 
         if logs is not None:
-            def write_logs():
-                os.makedirs(LOGS_DIR, exist_ok=True)
-                os.chmod(LOGS_DIR, 0o700)
-                with open(job.logs_path, "wb") as f:
-                    f.write(logs)
-
-            await middleware.run_in_thread(write_logs)
+            await job.logs_fd_write(logs)
 
         return job
 
@@ -595,19 +629,30 @@ class Job:
         return await subjob.wait(raise_error=True)
 
     def cleanup(self):
-        if self.logs_path:
+        if self.logs_path and not self.logs_path.startswith('MEMORY'):
             try:
                 os.unlink(self.logs_path)
             except Exception:
                 pass
 
     def start_logging(self):
+        if self.logs_path.startswith('MEMORY'):
+            limit = 10
+            parts = self.logs_path.split(':')
+            if len(parts) > 1:
+                limit = int(parts[1])
+
+            dq = deque(maxlen=limit)
+            self.logs_fd = {
+                'target': dq,
+                'head': dq,
+                'tail': None
+            }
+            return
+
         if self.logs_path is not None:
             os.makedirs(LOGS_DIR, mode=0o700, exist_ok=True)
             self.logs_fd = open(self.logs_path, 'ab', buffering=0)
-
-    async def logs_fd_write(self, data):
-        await self.middleware.run_in_thread(self.logs_fd.write, data)
 
     def send_event(self, name, fields):
         if not self.options['transient']:

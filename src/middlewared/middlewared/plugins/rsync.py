@@ -757,7 +757,7 @@ class RsyncTaskService(TaskPathService, TaskStateMixin):
     @item_method
     @accepts(Int('id'))
     @returns()
-    @job(lock=lambda args: args[-1], lock_queue_size=1, logs=True)
+    @job(lock=lambda args: args[-1], lock_queue_size=1, logs='FILE')
     def run(self, job, id):
         """
         Job to run rsync task of `id`.
