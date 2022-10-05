@@ -8,8 +8,10 @@ from auto_config import dev_test
 pytestmark = pytest.mark.skipif(dev_test, reason='Skipping for test development testing')
 
 
+# Only rerun twice it never fail twice after another run
+@pytest.mark.flaky(reruns=2, reruns_delay=1)
 def test_client_job_callback():
-    with mock("test.test1", """    
+    with mock("test.test1", """
         from middlewared.service import job
 
         @job()
@@ -33,6 +35,6 @@ def test_client_job_callback():
                 results = results[:2]
 
             assert len(results) == 2, pprint.pformat(results, indent=2)
-            assert results[0]['state'] == 'RUNNING'
-            assert results[1]['state'] == 'SUCCESS'
-            assert results[1]['result'] == 42
+            assert results[0]['state'] in 'RUNNING', pprint.pformat(results, indent=2)
+            assert results[1]['state'] == 'SUCCESS', pprint.pformat(results, indent=2)
+            assert results[1]['result'] == 42, pprint.pformat(results, indent=2)
