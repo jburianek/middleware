@@ -325,7 +325,7 @@ def test_30_add_iscsi_a_zvol_extent(request):
 
 
 @pytest.mark.dependency(name="iscsi_31")
-def test_31_associate_iscsi_zvolsleep(2)_target_and_zvol_extent(request):
+def test_31_associate_iscsi_zvol_target_and_zvol_extent(request):
     depends(request, ["iscsi_30"])
     global zvol_associate_id
     payload = {
