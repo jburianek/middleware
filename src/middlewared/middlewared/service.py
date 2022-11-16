@@ -355,7 +355,8 @@ class ServiceBase(type):
       - datastore_extend: datastore `extend` option used in common `query` method
       - datastore_prefix: datastore `prefix` option used in helper methods
       - service: system service `name` option used by `SystemServiceService`
-      - service_model: system service datastore model option used by `SystemServiceService` (`service` if used if not provided)
+      - service_model: system service datastore model option used by `SystemServiceService`
+                       (`service` if used if not provided)
       - service_verb: verb to be used on update (default to `reload`)
       - namespace: namespace identifier of the service
       - namespace_alias: another namespace identifier of the service, mostly used to rename and
@@ -1465,29 +1466,50 @@ class CoreService(Service):
         shell.resize(cols, rows)
 
     @filterable
+    @filterable_returns(Dict(
+        'session',
+        Str('id'),
+        Str('socket_family'),
+        Str('address'),
+        Bool('authenticated'),
+        Int('call_count'),
+    ))
     def sessions(self, filters, options):
         """
         Get currently open websocket sessions.
         """
-        return filter_list([
-            {
-                'id': i.session_id,
-                'socket_family': socket.AddressFamily(
-                    i.request.transport.get_extra_info('socket').family
-                ).name,
-                'address': (
-                    (
-                        i.request.headers.get('X-Real-Remote-Addr'),
-                        i.request.headers.get('X-Real-Remote-Port')
-                    ) if i.request.headers.get('X-Real-Remote-Addr') else (
-                        i.request.transport.get_extra_info("peername")
-                    )
-                ),
-                'authenticated': i.authenticated,
-                'call_count': i._softhardsemaphore.counter,
-            }
-            for i in self.middleware.get_wsclients().values()
-        ], filters, options)
+        sessions = []
+        for i in self.middleware.get_wsclients().values():
+            try:
+                session_id = i.session_id
+                authenticated = i.authenticated
+                call_count = i._softhardsemaphore.counter
+                socket_family = socket.AddressFamily(i.request.transport.get_extra_info('socket').family).name
+                address = ''
+                if addr := i.request.headers.get('X-Real-Remote-Addr'):
+                    port = i.request.headers.get('X-Real-Remote-Port')
+                    address = f'{addr}:{port}' if all((addr, port)) else address
+                else:
+                    if (info := i.request.transport.get_extra_info('peername')):
+                        if isinstance(info, list) and len(info) == 2:
+                            address = f'{info[0]}:{info[1]}'
+            except AttributeError:
+                # underlying websocket connection can be ripped down in process
+                # of enumerating this information. This is non-fatal, so ignore it.
+                pass
+            except Exception:
+                self.logger.warning('Failed enumerating websocket session.', exc_info=True)
+                break
+            else:
+                sessions.append({
+                    'id': session_id,
+                    'socket_family': socket_family,
+                    'address': address,
+                    'authenticated': authenticated,
+                    'call_count': call_count,
+                })
+
+        return filter_list(sessions, filters, options)
 
     @accepts(Bool('debug_mode'))
     async def set_debug_mode(self, debug_mode):
@@ -1644,9 +1666,11 @@ class CoreService(Service):
 
         return True
 
+    @no_auth_required
     @accepts(Str('target', enum=['WS', 'CLI', 'REST'], default='WS'))
     @private
-    def get_services(self, target):
+    @pass_app()
+    def get_services(self, app, target):
         """Returns a list of all registered services."""
         services = {}
         for k, v in list(self.middleware.get_services().items()):
@@ -1673,9 +1697,11 @@ class CoreService(Service):
 
         return services
 
+    @no_auth_required
     @accepts(Str('service', default=None, null=True), Str('target', enum=['WS', 'CLI', 'REST'], default='WS'))
     @private
-    def get_methods(self, service, target):
+    @pass_app()
+    def get_methods(self, app, service, target):
         """
         Return methods metadata of every available service.
 
@@ -1690,7 +1716,6 @@ class CoreService(Service):
                 continue
 
             for attr in dir(svc):
-
                 if attr.startswith('_'):
                     continue
 
@@ -1744,6 +1769,18 @@ class CoreService(Service):
                 # terminate is a private method used to clean up a service on shutdown
                 if attr == 'terminate':
                     continue
+
+                method_name = f'{name}.{attr}'
+                no_auth_required = hasattr(method, '_no_auth_required')
+
+                # Skip methods that are not allowed for the currently authenticated credentials
+                if app is not None:
+                    if not no_auth_required:
+                        if not app.authenticated_credentials:
+                            continue
+
+                        if not app.authenticated_credentials.authorize('CALL', method_name):
+                            continue
 
                 examples = defaultdict(list)
                 doc = inspect.getdoc(method)
@@ -1809,8 +1846,6 @@ class CoreService(Service):
                             d,
                         )[0]
 
-                method_name = f'{name}.{attr}'
-
                 if method_schemas['accepts'] is None:
                     raise RuntimeError(f'Method {method_name} is public but has no @accepts()')
 
@@ -1819,7 +1854,7 @@ class CoreService(Service):
                     'cli_description': (doc or '').split('\n\n')[0].split('.')[0].replace('\n', ' '),
                     'examples': examples,
                     'item_method': True if item_method else hasattr(method, '_item_method'),
-                    'no_auth_required': hasattr(method, '_no_auth_required'),
+                    'no_auth_required': no_auth_required,
                     'filterable': hasattr(method, '_filterable'),
                     'filterable_schema': filterable_schema,
                     'pass_application': hasattr(method, '_pass_app'),
@@ -1981,7 +2016,8 @@ class CoreService(Service):
         Str('filename'),
         Bool('buffered', default=False),
     )
-    async def download(self, method, args, filename, buffered):
+    @pass_app(rest=True)
+    async def download(self, app, method, args, filename, buffered):
         """
         Core helper to call a job marked for download.
 
@@ -1992,7 +2028,7 @@ class CoreService(Service):
         Returns the job id and the URL for download.
         """
         job = await self.middleware.call(method, *args, pipes=Pipes(output=self.middleware.pipe(buffered)))
-        token = await self.middleware.call('auth.generate_token', 300, {'filename': filename, 'job': job.id})
+        token = await self.middleware.call('auth.generate_token', 300, {'filename': filename, 'job': job.id}, app=app)
         self.middleware.fileapp.register_job(job.id, buffered)
         return job.id, f'/_download/{job.id}?auth_token={token}'
 
@@ -2074,7 +2110,8 @@ class CoreService(Service):
         options:
           - secret: password for PTVS
           - host: required for PYDEV, hostname of local computer (developer workstation)
-          - local_path: required for PYDEV, path for middlewared source in local computer (e.g. /home/user/freenas/src/middlewared/middlewared
+          - local_path: required for PYDEV, path for middlewared source in local computer
+                        (e.g. /home/user/freenas/src/middlewared/middlewared
           - threaded: run debugger in a new thread instead of event loop
         """
         if options['threaded']:
@@ -2224,5 +2261,5 @@ class CoreService(Service):
         }
 
 
-ABSTRACT_SERVICES = (ConfigService, CRUDService, SystemServiceService, SharingTaskService, SharingService,
-                     TaskPathService, TDBWrapConfigService, TDBWrapCRUDService)
+ABSTRACT_SERVICES = (CompoundService, ConfigService, CRUDService, SystemServiceService, SharingTaskService,
+                     SharingService, TaskPathService, TDBWrapConfigService, TDBWrapCRUDService)

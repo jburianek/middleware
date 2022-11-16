@@ -23,6 +23,7 @@ class VMWareModel(sa.Model):
     password = sa.Column(sa.EncryptedText())
     filesystem = sa.Column(sa.String(200))
     datastore = sa.Column(sa.String(200))
+    state = sa.Column(sa.JSON())
 
 
 class VMWareService(CRUDService):
@@ -90,12 +91,12 @@ class VMWareService(CRUDService):
 
         `datastore` is a valid datastore name which exists on the VMWare host.
         """
-        await self.validate_data(data, 'vmware_create')
+        await self.middleware.call('vmware.validate_data', data, 'vmware_create')
 
         data['id'] = await self.middleware.call(
             'datastore.insert',
             self._config.datastore,
-            data
+            {**data, 'state': {'state': 'PENDING'}},
         )
 
         return await self.get_instance(data['id'])
@@ -109,17 +110,18 @@ class VMWareService(CRUDService):
         Update VMWare snapshot of `id`.
         """
         old = await self.get_instance(id)
+        old.pop('state')
         new = old.copy()
 
         new.update(data)
 
-        await self.validate_data(new, 'vmware_update')
+        await self.middleware.call('vmware.validate_data', new, 'vmware_update')
 
         await self.middleware.call(
             'datastore.update',
             self._config.datastore,
             id,
-            new,
+            {**new, 'state': {'state': 'PENDING'}},
         )
 
         return await self.get_instance(id)
@@ -280,14 +282,7 @@ class VMWareService(CRUDService):
         self.middleware.call_sync('network.general.will_perform_activity', 'vmware')
 
         try:
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-            ssl_context.verify_mode = ssl.CERT_NONE
-            server_instance = connect.SmartConnect(
-                host=data['hostname'],
-                user=data['username'],
-                pwd=data['password'],
-                sslContext=ssl_context,
-            )
+            server_instance = self.connect(data)
         except (vim.fault.InvalidLogin, vim.fault.NoPermission, vim.fault.RestrictedVersion) as e:
             raise CallError(e.msg, errno.EPERM)
         except vmodl.RuntimeFault as e:
@@ -354,14 +349,7 @@ class VMWareService(CRUDService):
 
         item = await self.query([('id', '=', pk)], {'get': True})
 
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-        ssl_context.verify_mode = ssl.CERT_NONE
-        server_instance = connect.SmartConnect(
-            host=item['hostname'],
-            user=item['username'],
-            pwd=item['password'],
-            sslContext=ssl_context,
-        )
+        server_instance = self.connect(item)
 
         content = server_instance.RetrieveContent()
         objview = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
@@ -427,14 +415,11 @@ class VMWareService(CRUDService):
             snapvmskips = []
 
             try:
-                ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-                ssl_context.verify_mode = ssl.CERT_NONE
-                si = connect.SmartConnect(host=vmsnapobj["hostname"], user=vmsnapobj["username"],
-                                          pwd=vmsnapobj["password"], sslContext=ssl_context)
+                si = self.connect(vmsnapobj)
                 content = si.RetrieveContent()
             except Exception as e:
-                self.logger.warn("VMware login to %s failed", vmsnapobj["hostname"], exc_info=True)
-                self._alert_vmware_login_failed(vmsnapobj, e)
+                self.logger.warning("VMware login to %s failed", vmsnapobj["hostname"], exc_info=True)
+                self.alert_vmware_login_failed(vmsnapobj, e)
                 continue
 
             # There's no point to even consider VMs that are paused or powered off.
@@ -482,7 +467,7 @@ class VMWareService(CRUDService):
 
                     snapvms.append(vm.config.uuid)
 
-            connect.Disconnect(si)
+            self.disconnect(si)
 
             vmsnapobjs.append({
                 "vmsnapobj": vmsnapobj,
@@ -513,24 +498,21 @@ class VMWareService(CRUDService):
             vmsnapobj = elem["vmsnapobj"]
 
             try:
-                ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-                ssl_context.verify_mode = ssl.CERT_NONE
-                si = connect.SmartConnect(host=vmsnapobj["hostname"], user=vmsnapobj["username"],
-                                          pwd=vmsnapobj["password"], sslContext=ssl_context)
-                self._delete_vmware_login_failed_alert(vmsnapobj)
+                si = self.connect(vmsnapobj)
+                self.delete_vmware_login_failed_alert(vmsnapobj)
             except Exception as e:
                 self.logger.warning("VMware login failed to %s", vmsnapobj["hostname"])
-                self._alert_vmware_login_failed(vmsnapobj, e)
+                self.alert_vmware_login_failed(vmsnapobj, e)
+                for vm_uuid in elem["snapvms"]:
+                    self.middleware.call_sync("vmware.defer_deleting_snapshot", vmsnapobj, vm_uuid, vmsnapname)
                 continue
 
             # vm is an object, so we'll dereference that object anywhere it's user facing.
             for vm_uuid in elem["snapvms"]:
-                for vm in si.content.searchIndex.FindAllByUuid(None, vm_uuid, True):
+                for vm in self.find_vms_by_uuid(si, vm_uuid):
                     if [vm_uuid, vm.name] not in elem["snapvmfails"] and [vm_uuid, vm.name] not in elem["snapvmskips"]:
-                        snap = self._findVMSnapshotByName(vm, vmsnapname)
                         try:
-                            if snap:
-                                VimTask.WaitForTask(snap.RemoveSnapshot_Task(True))
+                            self.delete_snapshot(vm, vmsnapname)
                         except Exception as e:
                             self.logger.debug(
                                 "Exception removing snapshot %s on %s", vmsnapname, vm.name, exc_info=True
@@ -541,8 +523,9 @@ class VMWareService(CRUDService):
                                 "snapshot": vmsnapname,
                                 "error": self._vmware_exception_message(e),
                             })
+                            self.middleware.call_sync("vmware.defer_deleting_snapshot", vmsnapobj, vm_uuid, vmsnapname)
 
-            connect.Disconnect(si)
+            self.disconnect(si)
 
     @private
     def periodic_snapshot_task_begin(self, task_id):
@@ -574,6 +557,28 @@ class VMWareService(CRUDService):
     @job()
     def periodic_snapshot_task_end(self, job, context):
         return self.snapshot_end(context)
+
+    @private
+    def connect(self, vmsnapobj):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
+        ssl_context.verify_mode = ssl.CERT_NONE
+        si = connect.SmartConnect(host=vmsnapobj["hostname"], user=vmsnapobj["username"],
+                                  pwd=vmsnapobj["password"], sslContext=ssl_context)
+        return si
+
+    @private
+    def disconnect(self, si):
+        connect.Disconnect(si)
+
+    @private
+    def find_vms_by_uuid(self, si, vm_uuid):
+        return si.content.searchIndex.FindAllByUuid(None, vm_uuid, True)
+
+    @private
+    def delete_snapshot(self, vm, vmsnapname):
+        snap = self._findVMSnapshotByName(vm, vmsnapname)
+        if snap:
+            VimTask.WaitForTask(snap.RemoveSnapshot_Task(True))
 
     # Check if a VM is using a certain datastore
     def _doesVMDependOnDataStore(self, vm, dataStore):
@@ -645,14 +650,44 @@ class VMWareService(CRUDService):
         else:
             return str(e)
 
-    def _alert_vmware_login_failed(self, vmsnapobj, e):
+    @private
+    def alert_vmware_login_failed(self, vmsnapobj, e):
+        error = self._vmware_exception_message(e)
         self.middleware.call_sync("alert.oneshot_create", "VMWareLoginFailed", {
             "hostname": vmsnapobj["hostname"],
-            "error": self._vmware_exception_message(e),
+            "error": error,
+        })
+        self.set_vmsnapobj_state(vmsnapobj, {
+            "state": "ERROR",
+            "error": error,
         })
 
-    def _delete_vmware_login_failed_alert(self, vmsnapobj):
+    @private
+    def delete_vmware_login_failed_alert(self, vmsnapobj):
         self.middleware.call_sync("alert.oneshot_delete", "VMWareLoginFailed", vmsnapobj["hostname"])
+        self.set_vmsnapobj_state(vmsnapobj, {
+            "state": "SUCCESS",
+        })
+
+    @private
+    def set_vmsnapobj_state(self, vmsnapobj, state):
+        for vmware in self.middleware.call_sync(
+            "datastore.query",
+            "storage.vmwareplugin",
+            [["hostname", "=", vmsnapobj["hostname"]],
+             ["username", "=", vmsnapobj["username"]]],
+        ):
+            if vmware["password"] == vmsnapobj["password"]:  # These need to be decoded to be compared
+                self.set_vmsnapobj_state_by_id(vmware["id"], state)
+
+    @private
+    def set_vmsnapobj_state_by_id(self, id, state):
+        self.middleware.call_sync("datastore.update", "storage.vmwareplugin", id, {
+            "state": {
+                **state,
+                "datetime": datetime.utcnow(),
+            },
+        })
 
 
 async def setup(middleware):

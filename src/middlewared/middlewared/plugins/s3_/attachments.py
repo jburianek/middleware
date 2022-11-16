@@ -2,6 +2,7 @@ import os
 
 from middlewared.common.attachment import FSAttachmentDelegate
 from middlewared.common.attachment.certificate import CertificateServiceAttachmentDelegate
+from middlewared.common.ports import ServicePortDelegate
 from middlewared.utils.path import is_child
 
 
@@ -56,6 +57,15 @@ class S3CertificateAttachmentDelegate(CertificateServiceAttachmentDelegate):
     SERVICE = 's3'
 
 
+class S3ServicePortDelegate(ServicePortDelegate):
+
+    name = 's3'
+    namespace = 's3'
+    port_fields = ['bindport', 'console_bindport']
+    title = 'S3 Service'
+
+
 async def setup(middleware):
     await middleware.call('certificate.register_attachment_delegate', S3CertificateAttachmentDelegate(middleware))
     await middleware.call('pool.dataset.register_attachment_delegate', MinioFSAttachmentDelegate(middleware))
+    await middleware.call('port.register_attachment_delegate', S3ServicePortDelegate(middleware))

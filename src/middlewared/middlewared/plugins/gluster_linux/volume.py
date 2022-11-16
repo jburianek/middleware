@@ -4,7 +4,7 @@ from middlewared.utils import filter_list
 from middlewared.service import CRUDService, accepts, job, filterable, private, ValidationErrors
 from middlewared.schema import Dict, Str, Int, Bool, List, Ref, returns
 from middlewared.plugins.cluster_linux.utils import CTDBConfig, FuseConfig
-from .utils import GlusterConfig
+from .utils import GlusterConfig, set_gluster_workdir_dataset, get_gluster_workdir_dataset, format_bricks
 
 
 GLUSTER_JOB_LOCK = GlusterConfig.CLI_LOCK.value
@@ -45,7 +45,7 @@ class GlusterVolumeService(CRUDService):
     )
 
     @filterable
-    async def query(self, filters, options):
+    async def query(self, filters, filter_options):
         vols = []
         if await self.middleware.call('service.started', 'glusterd'):
             method = volume.status_detail
@@ -53,7 +53,7 @@ class GlusterVolumeService(CRUDService):
             vols = await self.middleware.call('gluster.method.run', method, options['kwargs'])
             vols = list(map(lambda i: dict(i, id=i['name']), vols))
 
-        return filter_list(vols, filters, options)
+        return filter_list(vols, filters, filter_options)
 
     @private
     async def exists_and_started(self, vol):
@@ -77,6 +77,20 @@ class GlusterVolumeService(CRUDService):
             )
 
         verrors.check()
+
+    @private
+    def store_workdir(self):
+        if get_gluster_workdir_dataset() is not None:
+            return
+
+        sysdataset = self.middleware.call_sync('systemdataset.config')
+        if not sysdataset['basename']:
+            self.logger.warning(
+                'Systemdataset not properly configured when gluster volume created'
+            )
+            return
+
+        set_gluster_workdir_dataset(sysdataset['basename'])
 
     @accepts(Dict(
         'glustervolume_create',
@@ -126,15 +140,12 @@ class GlusterVolumeService(CRUDService):
         await ctdb_job.wait(raise_error=True)
 
         name = data.pop('name')
-
-        bricks = []
-        for i in data.pop('bricks'):
-            bricks.append(i['peer_name'] + ':' + i['peer_path'])
-
+        bricks = await format_bricks(data.pop('bricks'))
         options = {'args': (name, bricks,), 'kwargs': data}
+
         await self.middleware.call('gluster.method.run', volume.create, options)
         await self.middleware.call('gluster.volume.start', {'name': name})
-
+        await self.middleware.call('gluster.volume.store_workdir')
         return await self.middleware.call('gluster.volume.query', [('id', '=', name)])
 
     @accepts(Dict(
@@ -315,135 +326,6 @@ class GlusterVolumeService(CRUDService):
 
         options = {'args': (data['name'],), 'kwargs': data['opts']}
         return await self.middleware.call('gluster.method.run', volume.optset, options)
-
-    @accepts(Dict(
-        'volume_addbrick',
-        Str('name', required=True),
-        List('bricks', items=[
-            Dict(
-                'brick',
-                Str('peer_name', required=True),
-                Str('peer_path', required=True),
-            ),
-        ], required=True),
-        Int('replica'),
-        Int('arbiter'),
-        Bool('force'),
-    ))
-    @returns()
-    async def addbrick(self, data):
-        """
-        Add bricks to a gluster volume.
-
-        `name` String representing name of gluster volume
-        `bricks` List representing the brick paths
-            `peer_name` String representing IP or DNS name of the peer
-            `peer_path` String representing the full path of the brick
-        `replica` Integer replicating replica count
-        `arbiter` Integer replicating arbiter count
-        `force` Boolean, if True, forcefully add brick(s)
-        """
-
-        bricks = []
-        for i in data.pop('bricks'):
-            bricks.append(i['peer_name'] + ':' + i['peer_path'])
-
-        options = {'args': (data.pop('name'), bricks,), 'kwargs': data}
-        return await self.middleware.call('gluster.method.run', volume.bricks.add, options)
-
-    @accepts(Dict(
-        'volume_removebrick',
-        Str('name', required=True),
-        List('bricks', items=[
-            Dict(
-                'brick',
-                Str('peer_name', required=True),
-                Str('peer_path', required=True),
-            ),
-        ], required=True),
-        Str(
-            'operation',
-            enum=['START', 'STOP', 'COMMIT', 'STATUS', 'FORCE'],
-            required=True,
-        ),
-        Int('replica'),
-    ))
-    @returns()
-    async def removebrick(self, data):
-        """
-        Perform a remove operation on the brick(s) in the gluster volume.
-
-        `name` String representing name of gluster volume
-        `bricks` List representing the brick paths
-            `peer_name` String representing IP or DNS name of the peer
-            `peer_path` String representing the full path of the brick
-        `operation` String representing the operation to be performed
-            `START` Start the removal of the brick(s)
-            `STOP` Stop the removal of the brick(s)
-            `COMMIT` Commit the removal of the brick(s)
-            `STATUS` Display status of the removal of the brick(s)
-            `FORCE` Force the removal of the brick(s)
-        `replica` Integer representing replica count
-        """
-
-        op = data.pop('operation')
-        name = data.pop('name')
-        bricks = []
-        for i in data.pop('bricks'):
-            bricks.append(i['peer_name'] + ':' + i['peer_path'])
-
-        options = {'args': (name, bricks,), 'kwargs': data}
-        if op.lower() == 'start':
-            method = volume.bricks.remove_start
-        elif op.lower() == 'stop':
-            method = volume.bricks.remove_stop
-        elif op.lower() == 'commit':
-            method = volume.bricks.remove_commit
-        elif op.lower() == 'status':
-            method = volume.bricks.remove_status
-        elif op.lower() == 'force':
-            method = volume.bricks.remove_force
-
-        return await self.middleware.call('gluster.method.run', method, options)
-
-    @accepts(Dict(
-        'volume_replacebrick',
-        Str('name', required=True),
-        Dict(
-            'src_brick',
-            Str('peer_name', required=True),
-            Str('peer_path', required=True),
-            required=True,
-        ),
-        Dict(
-            'new_brick',
-            Str('peer_name', required=True),
-            Str('peer_path', required=True),
-            required=True,
-        ),
-    ))
-    @returns()
-    async def replacebrick(self, data):
-        """
-        Commit the replacement of a brick.
-
-        `name` String representing name of gluster volume
-        `src_brick` Dict where
-            `peer_name` key is a string representing IP or DNS name of the peer
-            `peer_path` key is a string representing the full path of the brick
-        `new_brick` Dict where
-            `peer_name` key is a string representing IP or DNS name of the peer
-            `peer_path` key is a string representing the full path of the brick
-        """
-
-        src = data.pop('src_brick')
-        new = data.pop('new_brick')
-        src_brick = src['peer_name'] + ':' + src['peer_path']
-        new_brick = new['peer_name'] + ':' + new['peer_path']
-
-        method = volume.bricks.replace_commit
-        options = {'args': (data.pop('name'), src_brick, new_brick)}
-        return await self.middleware.call('gluster.method.run', method, options)
 
     @accepts(Dict(
         'volume_quota',

@@ -18,7 +18,6 @@ class KubernetesService(Service):
 
     @private
     async def post_start(self):
-        # TODO: Add support for migrations
         async with START_LOCK:
             return await self.post_start_impl()
 
@@ -134,6 +133,38 @@ class KubernetesService(Service):
         except Exception as e:
             raise CallError(f'Failed to configure PV/PVCs support: {e}')
 
+        for loadbalancer_svc in await self.middleware.call('k8s.service.query', [['spec.type', '=', 'LoadBalancer']]):
+            try:
+                await self.middleware.call(
+                    'k8s.service.delete', loadbalancer_svc['metadata']['name'],
+                    {'namespace': loadbalancer_svc['metadata']['namespace']}
+                )
+            except CallError:
+                self.logger.error('Failed to remove %r service', loadbalancer_svc['metadata']['name'], exc_info=True)
+
+        # In some scenarios k3s was not deleting loadbalancer based daemonsets, let's clean up those
+        for daemonset in await self.middleware.call(
+            'k8s.daemonset.query', [['metadata.namespace', '=', 'kube-system'], ['metadata.name', 'rin', 'svclb']]
+        ):
+            try:
+                await self.middleware.call(
+                    'k8s.daemonset.delete', daemonset['metadata']['name'],
+                    {'namespace': daemonset['metadata']['namespace']}
+                )
+            except CallError:
+                self.logger.error('Failed to remove %r daemonset', daemonset['metadata']['name'], exc_info=True)
+
+        # Let helm re-create load balancer services for scaled up apps
+        chart_releases = await self.middleware.call('chart.release.query', [['status', 'in', ('ACTIVE', 'DEPLOYING')]])
+        bulk_job = await self.middleware.call(
+            'core.bulk', 'chart.release.redeploy', [[r['name']] for r in chart_releases]
+        )
+        for index, status in enumerate(await bulk_job.wait()):
+            if status['error']:
+                self.middleware.logger.error(
+                    'Failed to redeploy %r chart release: %s', chart_releases[index], status['error']
+                )
+
         # Now that k8s is configured, we would want to scale down any deployment/statefulset which might
         # be consuming a locked host path volume
         await self.middleware.call('chart.release.scale_down_resources_consuming_locked_paths')
@@ -206,6 +237,8 @@ class KubernetesService(Service):
         if errors:
             raise CallError(str(errors))
 
+        await self.middleware.call('k8s.migration.scale_version_check')
+
     @private
     def status_change(self):
         config = self.middleware.call_sync('kubernetes.config')
@@ -219,10 +252,14 @@ class KubernetesService(Service):
         clean_start = True
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
-                on_disk_config = json.loads(f.read())
-            clean_start = not all(
-                config[k] == on_disk_config.get(k) for k in ('cluster_cidr', 'service_cidr', 'cluster_dns_ip')
-            )
+                try:
+                    on_disk_config = json.loads(f.read())
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    clean_start = not all(
+                        config[k] == on_disk_config.get(k) for k in ('cluster_cidr', 'service_cidr', 'cluster_dns_ip')
+                    )
 
         if clean_start and self.middleware.call_sync(
             'zfs.dataset.query', [['id', '=', config['dataset']]], {
@@ -247,6 +284,7 @@ class KubernetesService(Service):
     @private
     async def status_change_internal(self):
         await self.validate_k8s_fs_setup()
+        await self.middleware.call('k8s.migration.run')
         await self.middleware.call('service.start', 'docker')
         await self.middleware.call('container.image.load_default_images')
         await self.middleware.call('service.start', 'kubernetes')
@@ -265,14 +303,16 @@ class KubernetesService(Service):
         return {
             attr: value
             for attr, value in props.items()
-            if attr not in ('casesensitivity', 'mountpoint')
+            if attr not in ('casesensitivity', 'mountpoint', 'encryption')
         }
 
     @private
     async def create_update_k8s_datasets(self, k8s_ds):
         create_props_default = self.k8s_props_default()
         for dataset_name in await self.kubernetes_datasets(k8s_ds):
-            custom_props = self.kubernetes_dataset_custom_props(ds=dataset_name.rsplit(k8s_ds)[1].strip('/'))
+            custom_props = self.kubernetes_dataset_custom_props(
+                ds=dataset_name.rsplit(k8s_ds.split('/', 1)[0])[1].strip('/')
+            )
             # got custom properties, need to re-calculate
             # the update and create props.
             create_props = dict(create_props_default, **custom_props) if custom_props else create_props_default
@@ -320,11 +360,20 @@ class KubernetesService(Service):
     @private
     def kubernetes_dataset_custom_props(self, ds: str) -> Dict:
         props = {
-            'k3s/kubelet': {
+            'ix-applications': {
+                'encryption': 'off'
+            },
+            'ix-applications/k3s/kubelet': {
                 'mountpoint': 'legacy'
             }
         }
         return props.get(ds, dict())
+
+    @private
+    async def start_service(self):
+        await self.middleware.call('k8s.migration.scale_version_check')
+        await self.middleware.call('k8s.migration.run')
+        await self.middleware.call('service.start', 'kubernetes')
 
 
 async def _event_system(middleware, event_type, args):
@@ -335,7 +384,7 @@ async def _event_system(middleware, event_type, args):
             await middleware.call('kubernetes.config')
         )['pool']
     ):
-        asyncio.ensure_future(middleware.call('service.start', 'kubernetes'))
+        asyncio.ensure_future(middleware.call('kubernetes.start_service'))
     elif args['id'] == 'shutdown' and await middleware.call('service.started', 'kubernetes'):
         asyncio.ensure_future(middleware.call('service.stop', 'kubernetes'))
 

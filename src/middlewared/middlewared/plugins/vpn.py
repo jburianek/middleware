@@ -1,13 +1,14 @@
 import ipaddress
-import os
 import subprocess
 import tempfile
 
+import middlewared.sqlalchemy as sa
+
+from middlewared.async_validators import validate_port
 from middlewared.common.listen import SystemServiceListenSingleDelegate
 from middlewared.service import CallError, SystemServiceService, private
 from middlewared.schema import accepts, Bool, Dict, Int, IPAddr, Patch, Ref, returns, Str, ValidationErrors
-import middlewared.sqlalchemy as sa
-from middlewared.utils import osc, run
+from middlewared.utils import run
 from middlewared.validators import Port, Range
 
 
@@ -90,12 +91,12 @@ class OpenVPN:
                     'Root CA must have CA=TRUE set for BasicConstraints extension.'
                 )
 
-            for k in ('Certificate Sign', 'CRL Sign'):
-                if k not in (extensions.get('KeyUsage') or ''):
-                    verrors.add(
-                        f'{schema}.root_ca',
-                        f'Root CA must have {k} set for KeyUsage extension.'
-                    )
+            key_usage_check = 'Certificate Sign'
+            if key_usage_check not in (extensions.get('KeyUsage') or ''):
+                verrors.add(
+                    f'{schema}.root_ca',
+                    f'Root CA must have {key_usage_check!r} set for KeyUsage extension.'
+                )
 
         cert_id = data[f'{mode}_certificate']
         if not cert_id:
@@ -181,6 +182,8 @@ class OpenVPN:
     async def common_validation(middleware, data, schema, mode):
         verrors = ValidationErrors()
 
+        verrors.extend(await validate_port(middleware, f'{schema}.port', data['port'], f'openvpn.{mode}'))
+
         if data['cipher'] and data['cipher'] not in OpenVPN.ciphers():
             verrors.add(
                 f'{schema}.cipher',
@@ -192,6 +195,20 @@ class OpenVPN:
                 f'{schema}.authentication_algorithm',
                 'Please specify a valid authentication_algorithm.'
             )
+
+        if data.pop('remove_certificates'):
+            data.update({
+                'root_ca': None,
+                f'{mode}_certificate': None,
+            })
+        else:
+            for k in filter(
+                lambda k: not data.get(k), ['root_ca'] + ([] if mode == 'client' else ['server_certificate'])
+            ):
+                verrors.add(
+                    f'{schema}.{k}',
+                    'This is required'
+                )
 
         if data['root_ca']:
             verrors = await OpenVPN.cert_validation(middleware, data, schema, mode, verrors)
@@ -472,6 +489,7 @@ class OpenVPNServerService(SystemServiceService):
     @accepts(
         Patch(
             'openvpn_server_entry', 'openvpn_server_update',
+            ('add', Bool('remove_certificates', default=False)),
             ('rm', {'name': 'id'}),
             ('rm', {'name': 'interface'}),
             ('attr', {'update': True}),
@@ -487,8 +505,10 @@ class OpenVPNServerService(SystemServiceService):
         old_config = await self.config()
         old_config.pop('interface')
         config = old_config.copy()
-
-        config.update(data)
+        config.update({
+            'remove_certificates': False,
+            **data,
+        })
 
         # If tls_crypt_auth_enabled is set and we don't have a tls_crypt_auth key,
         # let's generate one please
@@ -506,7 +526,7 @@ class OpenVPNClientModel(sa.Model):
     __tablename__ = 'services_openvpnclient'
 
     id = sa.Column(sa.Integer(), primary_key=True)
-    port = sa.Column(sa.Integer(), default=1194)
+    port = sa.Column(sa.Integer(), default=1195)
     protocol = sa.Column(sa.String(4), default='UDP')
     device_type = sa.Column(sa.String(4), default='TUN')
     nobind = sa.Column(sa.Boolean(), default=True)
@@ -587,6 +607,16 @@ class OpenVPNClientService(SystemServiceService):
                 'This field is required.'
             )
 
+        auth_flags = ('auth-user-pass', 'pkcs12')
+        if not data['client_certificate'] and not any(
+            flag in data['additional_parameters'] for flag in auth_flags
+        ):
+            verrors.add(
+                f'{schema_name}.client_certificate',
+                'Either client certificate or one of the "pkcs12" / "auth-user-pass" options '
+                'must be specified in additional parameters'
+            )
+
         if not await self.validate_nobind(data):
             verrors.add(
                 f'{schema_name}.nobind',
@@ -625,16 +655,22 @@ class OpenVPNClientService(SystemServiceService):
             ):
                 raise CallError('Root CA has been revoked. Please select another Root CA.')
 
-        if not config['client_certificate']:
-            raise CallError('Please configure client certificate first.')
-        else:
-            if not await self.middleware.call(
-                'certificate.query', [
-                    ['id', '=', config['client_certificate']],
-                    ['revoked', '=', False]
-                ]
-            ):
-                raise CallError('Client certificate has been revoked. Please select another Client certificate.')
+        if config['client_certificate'] and not await self.middleware.call(
+            'certificate.query', [
+                ['id', '=', config['client_certificate']],
+                ['revoked', '=', False]
+            ]
+        ):
+            raise CallError('Client certificate has been revoked. Please select another Client certificate.')
+
+        auth_flags = ('auth-user-pass', 'pkcs12')
+        if not config['client_certificate'] and not any(
+            flag in config['additional_parameters'] for flag in auth_flags
+        ):
+            raise CallError(
+                'You must either specify client certificate or one of --pkcs12 / '
+                '--auth-user-pass params in additional parameters'
+            )
 
         if not config['remote']:
             raise CallError('Please configure remote first.')
@@ -647,6 +683,7 @@ class OpenVPNClientService(SystemServiceService):
     @accepts(
         Patch(
             'openvpn_client_entry', 'openvpn_client_update',
+            ('add', Bool('remove_certificates', default=False)),
             ('rm', {'name': 'id'}),
             ('rm', {'name': 'interface'}),
             ('attr', {'update': True}),
@@ -663,8 +700,10 @@ class OpenVPNClientService(SystemServiceService):
         old_config = await self.config()
         old_config.pop('interface')
         config = old_config.copy()
-
-        config.update(data)
+        config.update({
+            'remove_certificates': False,
+            **data,
+        })
 
         config = await self.validate(config, 'openvpn_client_update')
 
@@ -673,26 +712,8 @@ class OpenVPNClientService(SystemServiceService):
         return await self.config()
 
 
-async def _event_system(middleware, event_type, args):
-
-    # TODO: Let's please make sure openvpn functions as desired in scale
-    if osc.IS_FREEBSD and args['id'] == 'ready':
-        for srv in await middleware.call(
-            'service.query', [
-                ['enable', '=', True], ['OR', [['service', '=', 'openvpn_server'], ['service', '=', 'openvpn_client']]]
-            ]
-        ):
-            await middleware.call('service.start', srv['service'])
-
-
 async def setup(middleware):
     await middleware.call(
         'interface.register_listen_delegate',
         SystemServiceListenSingleDelegate(middleware, 'openvpn.server', 'server'),
     )
-    middleware.event_subscribe('system', _event_system)
-    if not os.path.exists('/usr/local/etc/rc.d/openvpn'):
-        return
-    for srv in ('openvpn_client', 'openvpn_server'):
-        if not os.path.exists(f'/etc/local/rc.d/{srv}'):
-            os.symlink('/usr/local/etc/rc.d/openvpn', f'/usr/local/etc/rc.d/{srv}')

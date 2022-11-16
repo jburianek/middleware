@@ -150,12 +150,17 @@ class ChartReleaseService(CRUDService):
             resources_filters = [['metadata.namespace', '^', CHART_NAMESPACE_PREFIX]]
 
         ports_used = collections.defaultdict(list)
-        for node_port_svc in await self.middleware.call(
-            'k8s.service.query', [['spec.type', '=', 'NodePort']] + resources_filters
+        service_filters = [['spec.type', '=', 'LoadBalancer']] if k8s_config['servicelb'] else []
+        for k8s_svc in await self.middleware.call(
+            'k8s.service.query', [['OR', [['spec.type', '=', 'NodePort']] + service_filters]] + resources_filters
         ):
-            release_name = node_port_svc['metadata']['namespace'][len(CHART_NAMESPACE_PREFIX):]
+            release_name = k8s_svc['metadata']['namespace'][len(CHART_NAMESPACE_PREFIX):]
             ports_used[release_name].extend([
-                {'port': p['node_port'], 'protocol': p['protocol']} for p in node_port_svc['spec']['ports']
+                {
+                    'port': p['port' if k8s_svc['spec']['type'] == 'LoadBalancer' else 'node_port'],
+                    'protocol': p['protocol']
+                }
+                for p in k8s_svc['spec']['ports']
             ])
 
         if get_resources:
@@ -544,6 +549,9 @@ class ChartReleaseService(CRUDService):
         }, self.middleware)
 
         await self.middleware.call('chart.release.helm_action', chart_release, chart_path, config, 'update')
+
+        if release_orig['status'] == 'STOPPED':
+            await self.middleware.call('chart.release.scale', chart_release, {'replica_count': 0})
 
         job.set_progress(90, 'Syncing secrets for chart release')
         await self.middleware.call('chart.release.sync_secrets_for_release', chart_release)

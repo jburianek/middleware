@@ -6,6 +6,7 @@ from middlewared.schema import accepts, Bool, Dict, List, Ref, Str, returns
 from middlewared.service import CallError, private, Service
 from middlewared.utils import run
 
+from .devices.usb import USB_CONTROLLER_CHOICES
 from .utils import get_virsh_command_args
 
 
@@ -16,6 +17,14 @@ class VMDeviceService(Service):
 
     class Config:
         namespace = 'vm.device'
+
+    @accepts()
+    @returns(Dict(*[Str(k, enum=[k]) for k in USB_CONTROLLER_CHOICES]))
+    async def usb_controller_choices(self):
+        """
+        Retrieve USB controller type choices
+        """
+        return {k: k for k in USB_CONTROLLER_CHOICES}
 
     @private
     def retrieve_usb_device_information(self, xml_str):
@@ -63,11 +72,7 @@ class VMDeviceService(Service):
         Retrieve details about `device` USB device.
         """
         await self.middleware.call('vm.check_setup_libvirt')
-        data = {
-            'capability': self.get_capability_keys(),
-            'available': False,
-            'error': None,
-        }
+        data = await self.get_basic_usb_passthrough_device_data()
         cp = await run(get_virsh_command_args() + ['nodedev-dumpxml', device], check=False)
         if cp.returncode:
             data['error'] = cp.stderr.decode()
@@ -84,6 +89,14 @@ class VMDeviceService(Service):
         return {
             **data,
             'available': not data['error'],
+        }
+
+    @private
+    async def get_basic_usb_passthrough_device_data(self):
+        return {
+            'capability': self.get_capability_keys(),
+            'available': False,
+            'error': None,
         }
 
     @accepts()
@@ -107,3 +120,13 @@ class VMDeviceService(Service):
             mapping[device] = details
 
         return mapping
+
+    @private
+    async def get_usb_port_from_usb_details(self, usb_data):
+        if any(not usb_data.get(k) for k in ('product_id', 'vendor_id')):
+            raise CallError('Product / Vendor ID must be specified for USBs')
+
+        for device, device_details in (await self.usb_passthrough_choices()).items():
+            capability = device_details['capability']
+            if all(usb_data[k] == capability[k] for k in ('product_id', 'vendor_id')):
+                return device

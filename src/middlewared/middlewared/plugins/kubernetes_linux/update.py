@@ -1,6 +1,8 @@
 import asyncio
 import ipaddress
 import itertools
+import json
+import os.path
 
 import middlewared.sqlalchemy as sa
 
@@ -74,7 +76,7 @@ class KubernetesService(ConfigService):
         ]
 
     @private
-    async def licensed_for_apps(self):
+    async def license_active(self):
         can_run_apps = True
         if await self.middleware.call('system.is_ha_capable'):
             license = await self.middleware.call('system.license')
@@ -83,18 +85,59 @@ class KubernetesService(ConfigService):
         return can_run_apps
 
     @private
+    def check_config_on_apps_dataset(self, pool, verrors, force, schema_name):
+        apps_ds = applications_ds_name(pool)
+        if force or not self.middleware.call_sync(
+            'zfs.dataset.query', [['id', '=', apps_ds]], {'extra': {'retrieve_children': False}}
+        ):
+            return
+
+        missing = []
+        for ds_name in self.middleware.call_sync('kubernetes.kubernetes_datasets', apps_ds):
+            if not self.middleware.call_sync(
+                'zfs.dataset.query', [['id', '=', ds_name]], {'extra': {'retrieve_children': False}}
+            ):
+                missing.append(ds_name)
+
+        force_str = 'Specify force to override this and let system re-initialize applications.'
+        if missing:
+            verrors.add(
+                f'{schema_name}.force',
+                f'Apps have been partially initialized on {pool!r} pool but '
+                f'it is missing {", ".join(missing)!r} datasets. {force_str}'
+            )
+
+        config_path = os.path.join('/mnt', applications_ds_name(pool), 'config.json')
+        if not verrors:
+            try:
+                with open(config_path, 'r') as f:
+                    json.loads(f.read())
+            except FileNotFoundError:
+                verrors.add(
+                    f'{schema_name}.force',
+                    f'Missing {config_path!r} configuration file. {force_str}'
+                )
+            except json.JSONDecodeError:
+                verrors.add(
+                    f'{schema_name}.force',
+                    f'{config_path!r} configuration file is an invalid JSON file. {force_str}'
+                )
+
+    @private
     async def validate_data(self, data, schema, old_data):
         verrors = ValidationErrors()
 
-        if await self.middleware.call('system.is_ha_capable') and 'JAILS' not in (await self.middleware.call(
-            'system.license'
-        ))['features']:
+        if not await self.license_active():
             verrors.add(
                 f'{schema}.pool',
                 'System is not licensed to use Applications'
             )
 
+        if data['pool'] and not await self.middleware.call('pool.query', [['name', '=', data['pool']]]):
+            verrors.add(f'{schema}.pool', 'Please provide a valid pool configured in the system.')
+
         if data.pop('migrate_applications', False):
+            migration_options = data.get('migration_options', {})
             if data['pool'] == old_data['pool']:
                 verrors.add(
                     f'{schema}.migrate_applications',
@@ -122,16 +165,105 @@ class KubernetesService(ConfigService):
                         f'possible as {applications_ds_name(data["pool"])} already exists.'
                     )
 
-                if not await self.middleware.call(
+                ix_apps_ds = await self.middleware.call(
                     'zfs.dataset.query', [['id', '=', applications_ds_name(old_data['pool'])]], {
-                        'extra': {'retrieve_children': False, 'retrieve_properties': False}
+                        'extra': {'retrieve_children': False, 'retrieve_properties': True}
                     }
-                ):
+                )
+                if not ix_apps_ds:
                     # Edge case but handled just to be sure
                     verrors.add(
                         f'{schema}.migrate_applications',
                         f'{applications_ds_name(old_data["pool"])!r} does not exist, migration not possible.'
                     )
+                elif ix_apps_ds[0]['encrypted'] and ix_apps_ds[0]['encryption_root'] == ix_apps_ds[0]['id']:
+                    # This should never happen but better be safe with extra validation
+                    verrors.add(
+                        f'{schema}.migrate_applications',
+                        f'{ix_apps_ds[0]["id"]!r} encryption root is it\'s own encryption root '
+                        'which is unsupported configuration'
+                    )
+
+                if not verrors:
+                    source_root_ds = await self.middleware.call(
+                        'pool.dataset.get_instance', old_data['pool'], {'extra': {'retrieve_children': False}}
+                    )
+                    ix_apps_ds = ix_apps_ds[0]
+                    if source_root_ds['encrypted'] and ix_apps_ds['encrypted']:
+                        # We would like to allow migrating encrypted ix-apps dataset but set
+                        # some restrictions to make the migration simpler
+                        # Validation for source
+                        if source_root_ds['locked']:
+                            verrors.add(
+                                f'{schema}.migrate_applications',
+                                f'Migration not possible as {source_root_ds["id"]!r} pool is locked'
+                            )
+                        else:
+                            if source_root_ds['key_format']['value'] == 'PASSPHRASE':
+                                if not migration_options.get('passphrase'):
+                                    verrors.add(
+                                        f'{schema}.migration_options.passphrase',
+                                        f'This is required as {source_root_ds["id"]!r} is passphrase encrypted'
+                                    )
+                                else:
+                                    try:
+                                        valid = await self.middleware.call(
+                                            'zfs.dataset.check_key', source_root_ds['id'], {
+                                                'key': migration_options['passphrase'],
+                                            }
+                                        )
+                                    except CallError as e:
+                                        verrors.add(
+                                            f'{schema}.migration_options.passphrase',
+                                            f'Unable to validate specified passphrase: {e!r}'
+                                        )
+                                    else:
+                                        if not valid:
+                                            verrors.add(
+                                                f'{schema}.migration_options.passphrase',
+                                                'Invalid passphrase specified'
+                                            )
+                            elif not await self.middleware.call(
+                                'datastore.query', 'storage.encrypteddataset', [['name', '=', old_data['pool']]],
+                            ):
+                                verrors.add(
+                                    f'{schema}.migrate_applications',
+                                    'Migration not possible as system does not has '
+                                    f'encryption key for {old_data["pool"]!r} stored'
+                                )
+
+                        # Now let's add some validation for destination
+                        destination_root_ds = await self.middleware.call(
+                            'pool.dataset.get_instance', data['pool'], {
+                                'extra': {'retrieve_children': False}
+                            }
+                        )
+                        if not destination_root_ds['encrypted']:
+                            verrors.add(
+                                f'{schema}.migrate_applications',
+                                f'Destination {data["pool"]!r} root dataset must be "KEY" encrypted as '
+                                f'{ix_apps_ds["id"]!r} is encrypted and it is not supported migrating encrypted '
+                                'applications dataset to a non-encrypted pool.'
+                            )
+                        elif destination_root_ds['key_format']['value'] == 'PASSPHRASE':
+                            verrors.add(
+                                f'{schema}.migrate_applications',
+                                f'{ix_apps_ds["id"]!r} can only be migrated to a destination pool '
+                                'which is "KEY" encrypted.'
+                            )
+                        elif destination_root_ds['locked']:
+                            verrors.add(
+                                f'{schema}.migrate_applications',
+                                f'Migration not possible as {data["pool"]!r} is locked'
+                            )
+                        elif not await self.middleware.call(
+                            'datastore.query', 'storage.encrypteddataset', [['name', '=', data['pool']]]
+                        ):
+                            verrors.add(
+                                f'{schema}.migrate_applications',
+                                f'Migration not possible as system does not has encryption key for {data["pool"]!r} '
+                                'stored'
+                            )
 
         network_cidrs = set([
             ipaddress.ip_network(f'{ip_config["address"]}/{ip_config["netmask"]}', False)
@@ -159,9 +291,6 @@ class KubernetesService(ConfigService):
                 data['cluster_dns_ip'] = str(list(ipaddress.ip_network(data['service_cidr'], False).hosts())[9])
             else:
                 verrors.add(f'{schema}.cluster_dns_ip', 'Please specify cluster_dns_ip.')
-
-        if data['pool'] and not await self.middleware.call('pool.query', [['name', '=', data['pool']]]):
-            verrors.add(f'{schema}.pool', 'Please provide a valid pool configured in the system.')
 
         for k in ('cluster_cidr', 'service_cidr'):
             if not data[k]:
@@ -215,6 +344,10 @@ class KubernetesService(ConfigService):
                 'Host path validation cannot be switched off for SCALE ENTERPRISE users'
             )
 
+        force = data.pop('force', False)
+        if data['pool'] and not verrors:
+            await self.middleware.call('kubernetes.check_config_on_apps_dataset', data['pool'], verrors, force, schema)
+
         verrors.check()
 
     @private
@@ -234,7 +367,7 @@ class KubernetesService(ConfigService):
         data.pop('dataset')
 
         try:
-            await self.validate_data(data, 'kubernetes', data)
+            await self.validate_data({**data, 'force': True}, 'kubernetes', data)
         except ValidationErrors as e:
             return e
 
@@ -242,6 +375,11 @@ class KubernetesService(ConfigService):
         Patch(
             'kubernetes_entry', 'kubernetes_update',
             ('add', Bool('migrate_applications')),
+            ('add', Bool('force')),
+            ('add', Dict(
+                'migration_options',
+                Str('passphrase', empty=False),
+            )),
             ('rm', {'name': 'id'}),
             ('rm', {'name': 'dataset'}),
             ('attr', {'update': True}),
@@ -295,7 +433,7 @@ class KubernetesService(ConfigService):
         migrate = config.get('migrate_applications')
 
         await self.validate_data(config, 'kubernetes_update', old_config)
-
+        migration_options = config.pop('migration_options', {})
         if len(set(old_config.items()) ^ set(config.items())) > 0:
             await self.middleware.call('chart.release.clear_update_alerts_for_all_chart_releases')
             if migrate and config['pool'] != old_config['pool']:
@@ -304,7 +442,7 @@ class KubernetesService(ConfigService):
                     f'Migrating {applications_ds_name(old_config["pool"])} to {applications_ds_name(config["pool"])}'
                 )
                 await self.middleware.call(
-                    'kubernetes.migrate_ix_applications_dataset', job, config, old_config
+                    'kubernetes.migrate_ix_applications_dataset', job, config, old_config, migration_options
                 )
                 job.set_progress(100, 'Migration complete for ix-applications dataset')
             else:

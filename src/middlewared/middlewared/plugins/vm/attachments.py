@@ -3,6 +3,7 @@ import collections
 import os.path
 
 from middlewared.common.attachment import FSAttachmentDelegate
+from middlewared.common.ports import PortDelegate
 from middlewared.plugins.zfs_.utils import zvol_path_to_name
 from middlewared.service import private, Service
 from middlewared.utils.path import is_child
@@ -125,7 +126,29 @@ class VMFSAttachmentDelegate(FSAttachmentDelegate):
         await self.toggle(attachments, True)
 
 
+class VMPortDelegate(PortDelegate):
+
+    name = 'vm devices'
+    namespace = 'vm.device'
+    title = 'VM Device Service'
+
+    async def get_ports(self):
+        ports = []
+        vms = {vm['id']: vm['name'] for vm in await self.middleware.call('vm.query')}
+        for device in await self.middleware.call('vm.device.query', [['dtype', '=', 'DISPLAY']]):
+            ports.append({
+                'description': f'{vms[device["vm"]]!r} VM',
+                'ports': [
+                    device['attributes']['port'],
+                    device['attributes']['web_port'],
+                ]
+            })
+
+        return ports
+
+
 async def setup(middleware):
     asyncio.ensure_future(
         middleware.call('pool.dataset.register_attachment_delegate', VMFSAttachmentDelegate(middleware))
     )
+    await middleware.call('port.register_attachment_delegate', VMPortDelegate(middleware))

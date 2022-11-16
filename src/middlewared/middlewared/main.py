@@ -4,7 +4,7 @@ from .common.event_source.manager import EventSourceManager
 from .event import Events
 from .job import Job, JobsQueue
 from .pipe import Pipes, Pipe
-from .restful import copy_multipart_to_pipe, RESTfulAPI
+from .restful import authenticate, copy_multipart_to_pipe, RESTfulAPI
 from .settings import conf
 from .schema import clean_and_validate_arg, Error as SchemaError
 import middlewared.service
@@ -62,6 +62,7 @@ import urllib.parse
 import uuid
 import tracemalloc
 
+import psutil
 from systemd.daemon import notify as systemd_notify
 
 from . import logger
@@ -471,47 +472,6 @@ class FileApplication(object):
         return resp
 
     async def upload(self, request):
-        denied = True
-        api_key = None
-        auth = request.headers.get('Authorization')
-        if auth:
-            if auth.startswith('Basic '):
-                twofactor_auth = await self.middleware.call('auth.twofactor.config')
-                if twofactor_auth['enabled']:
-                    return web.Response(status=401, body='HTTP Basic Auth is unavailable when OTP is enabled')
-
-                try:
-                    auth = binascii.a2b_base64(auth[6:]).decode()
-                    if ':' in auth:
-                        user, password = auth.split(':', 1)
-                        if await self.middleware.call('auth.check_user', user, password):
-                            denied = False
-                except binascii.Error:
-                    pass
-            elif auth.startswith('Token '):
-                auth_token = auth.split(" ", 1)[1]
-                token = await self.middleware.call('auth.get_token', auth_token)
-
-                if token:
-                    denied = False
-            elif auth.startswith('Bearer '):
-                key = auth.split(' ', 1)[1]
-
-                if api_key := await self.middleware.call('api_key.authenticate', key):
-                    denied = False
-        else:
-            qs = urllib.parse.parse_qs(request.query_string)
-            if 'auth_token' in qs:
-                auth_token = qs.get('auth_token')[0]
-                token = await self.middleware.call('auth.get_token', auth_token)
-                if token:
-                    denied = False
-
-        if denied:
-            resp = web.Response()
-            resp.set_status(401)
-            return resp
-
         reader = await request.multipart()
 
         part = await reader.next()
@@ -533,11 +493,11 @@ class FileApplication(object):
         if 'method' not in data:
             return web.Response(status=422)
 
-        if api_key is not None:
-            if not api_key.authorize('CALL', data['method']):
-                resp = web.Response()
-                resp.set_status(403)
-                return resp
+        authenticated_credentials = await authenticate(self.middleware, request, 'CALL', data['method'])
+        if authenticated_credentials is None:
+            raise web.HTTPUnauthorized()
+        if not authenticated_credentials.authorize('CALL', data['method']):
+            raise web.HTTPForbidden()
 
         filepart = await reader.next()
 
@@ -578,43 +538,41 @@ class ShellWorkerThread(threading.Thread):
     and spawning the reader and writer threads.
     """
 
-    def __init__(self, middleware, ws, input_queue, loop, options):
+    def __init__(self, middleware, ws, input_queue, loop, username, options):
         self.middleware = middleware
         self.ws = ws
         self.input_queue = input_queue
         self.loop = loop
         self.shell_pid = None
-        self.command = self.get_command(options)
+        self.command = self.get_command(username, options)
         self._die = False
         super(ShellWorkerThread, self).__init__(daemon=True)
 
-    def get_command(self, options):
+    def get_command(self, username, options):
         allowed_options = ('chart_release', 'vm_id')
         if all(options.get(k) for k in allowed_options):
             raise CallError(f'Only one option is supported from {", ".join(allowed_options)}')
 
         if options.get('vm_id'):
-            if osc.IS_FREEBSD:
-                return ['/usr/bin/cu', '-l', f'nmdm{options["vm_id"]}B']
-            else:
-                return [
-                    '/usr/bin/virsh', '-c', 'qemu+unix:///system?socket=/run/truenas_libvirt/libvirt-sock',
-                    'console', f'{options["vm_data"]["id"]}_{options["vm_data"]["name"]}'
-                ]
+            return [
+                '/usr/bin/sudo', '-H', '-u', username,
+                '/usr/bin/virsh', '-c', 'qemu+unix:///system?socket=/run/truenas_libvirt/libvirt-sock',
+                'console', f'{options["vm_data"]["id"]}_{options["vm_data"]["name"]}'
+            ]
         elif options.get('chart_release'):
             return [
+                '/usr/bin/sudo', '-H', '-u', username,
                 '/usr/local/bin/k3s', 'kubectl', 'exec', '-n', options['chart_release']['namespace'],
                 f'pod/{options["pod_name"]}', '--container', options['container_name'], '-it', '--',
                 options.get('command', '/bin/bash'),
             ]
         else:
-            return ['/usr/bin/login', '-p', '-f', 'root']
+            return ['/usr/bin/login', '-p', '-f', username]
 
     def resize(self, cols, rows):
         self.input_queue.put(ShellResize(cols, rows))
 
     def run(self):
-
         self.shell_pid, master_fd = os.forkpty()
         if self.shell_pid == 0:
             osc.close_fds(3)
@@ -762,7 +720,7 @@ class ShellApplication(object):
                 if not token:
                     continue
 
-                token = await self.middleware.call('auth.get_token', token)
+                token = await self.middleware.call('auth.get_token_for_shell_application', token)
                 if not token:
                     await ws.send_json({
                         'msg': 'failed',
@@ -788,7 +746,7 @@ class ShellApplication(object):
 
                 conndata.t_worker = ShellWorkerThread(
                     middleware=self.middleware, ws=ws, input_queue=input_queue, loop=asyncio.get_event_loop(),
-                    options=options,
+                    username=token['username'], options=options,
                 )
                 conndata.t_worker.start()
 
@@ -809,29 +767,25 @@ class ShellApplication(object):
         return ws
 
     async def worker_kill(self, t_worker):
-        # If connection has been closed lets make sure shell is killed
-        if t_worker.shell_pid:
+        def worker_kill_impl():
+            # If connection has been closed lets make sure shell is killed
+            if t_worker.shell_pid:
+                with contextlib.suppress(psutil.NoSuchProcess):
+                    shell = psutil.Process(t_worker.shell_pid)
+                    to_terminate = [shell] + shell.children(recursive=True)
 
-            try:
-                pid_waiter = osc.PidWaiter(self.middleware, t_worker.shell_pid)
+                    for p in to_terminate:
+                        with contextlib.suppress(psutil.NoSuchProcess):
+                            p.terminate()
+                    gone, alive = psutil.wait_procs(to_terminate, timeout=2)
 
-                os.kill(t_worker.shell_pid, signal.SIGTERM)
+                    for p in alive:
+                        with contextlib.suppress(psutil.NoSuchProcess):
+                            p.kill()
 
-                # If process has not died in 2 seconds, try the big gun
-                if not await pid_waiter.wait(2):
-                    os.kill(t_worker.shell_pid, signal.SIGKILL)
+            t_worker.join()
 
-                    # If process has not died even with the big gun
-                    # There is nothing else we can do, leave it be and
-                    # release the worker thread
-                    if not await pid_waiter.wait(2):
-                        t_worker.die()
-            except ProcessLookupError:
-                pass
-
-        # Wait thread join in yet another thread to avoid event loop blockage
-        # There may be a simpler/better way to do this?
-        await self.middleware.run_in_thread(t_worker.join)
+        await self.middleware.run_in_thread(worker_kill_impl)
 
 
 class PreparedCall:
@@ -1770,8 +1724,10 @@ class Middleware(LoadPluginsMixin, ServiceCallMixin):
         if await self.call('system.state') == 'READY':
             self._setup_periodic_tasks()
 
+        unix_socket_path = os.path.join(MIDDLEWARE_RUN_DIR, 'middlewared.sock')
         await web.TCPSite(runner, '0.0.0.0', 6000, reuse_address=True, reuse_port=True).start()
-        await web.UnixSite(runner, os.path.join(MIDDLEWARE_RUN_DIR, 'middlewared.sock')).start()
+        await web.UnixSite(runner, unix_socket_path).start()
+        os.chmod(unix_socket_path, 0o666)
 
         if self.trace_malloc:
             limit = self.trace_malloc[0]

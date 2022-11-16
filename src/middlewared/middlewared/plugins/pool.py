@@ -2967,25 +2967,12 @@ class PoolDatasetService(CRUDService):
     @private
     async def internal_datasets_filters(self):
         # We get filters here which ensure that we don't match an internal dataset
-        filters = []
-        try:
-            sysds = (await self.middleware.call('cache.get', 'SYSDATASET_PATH'))['dataset']
-        except KeyError:
-            sysds = (await self.middleware.call('systemdataset.config'))['basename']
-
-        if sysds:
-            filters.extend([['id', '!=', sysds], ['id', '!^', f'{sysds}/']])
-
-        filters.append(['pool', '!=', await self.middleware.call('boot.pool_name')])
-
-        # top level dataset that stores all things related to gluster config
-        # needs to be hidden from local webUI. (This is managed by TrueCommander)
-        filters.extend([
-            ['id', 'rnin', '.glusterfs'],
+        return [
+            ['pool', '!=', await self.middleware.call('boot.pool_name')],
+            ['id', 'rnin', '/.system'],
+            ['id', 'rnin', '/.glusterfs'],
             ['id', 'rnin', '/ix-applications/'],
-        ])
-
-        return filters
+        ]
 
     @private
     async def is_internal_dataset(self, dataset):
@@ -3141,7 +3128,7 @@ class PoolDatasetService(CRUDService):
         Inheritable(Str('checksum', enum=ZFS_CHECKSUM_CHOICES)),
         Inheritable(Str('readonly', enum=['ON', 'OFF'])),
         Inheritable(Str('recordsize'), has_default=False),
-        Inheritable(Str('casesensitivity', enum=['SENSITIVE', 'INSENSITIVE', 'MIXED']), has_default=False),
+        Inheritable(Str('casesensitivity', enum=['SENSITIVE', 'INSENSITIVE']), has_default=False),
         Inheritable(Str('aclmode', enum=['PASSTHROUGH', 'RESTRICTED', 'DISCARD']), has_default=False),
         Inheritable(Str('acltype', enum=['OFF', 'NFSV4', 'POSIX']), has_default=False),
         Str('share_type', default='GENERIC', enum=['GENERIC', 'SMB']),

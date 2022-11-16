@@ -34,9 +34,9 @@ class DisabledEnum(enum.Enum):
     NO_SYSTEM_READY = 'Other node has not finished booting.'
     NO_FENCED = 'Fenced is not running.'
     REM_FAILOVER_ONGOING = 'Other node is currently processing a failover event.'
-    NO_JOURNAL_SYNC = 'Thread responsible for syncing db transactions not running on this node.'
-    REM_NO_JOURNAL_SYNC = 'Thread responsible for syncing db transactions not running on other node.'
     HEALTHY = 'Failover is healthy.'
+    NO_HEARTBEAT_IFACE = 'Local heartbeat interface does not exist.'
+    NO_CARRIER_ON_HEARTBEAT = 'Local heartbeat interface is down.'
     UNKNOWN = 'UNKNOWN'
 
 

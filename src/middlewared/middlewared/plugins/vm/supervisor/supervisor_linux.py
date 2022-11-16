@@ -1,4 +1,6 @@
-from middlewared.plugins.vm.devices import CDROM, DISK, DISPLAY, RAW
+import shlex
+
+from middlewared.plugins.vm.devices import CDROM, DISK, DISPLAY, RAW, USB
 from middlewared.utils import Nid
 
 from .supervisor_base import VMSupervisorBase
@@ -13,7 +15,11 @@ class VMSupervisor(VMSupervisorBase):
         )
 
     def commandline_xml(self):
-        return []
+        return [create_element(
+            'commandline', xmlns='http://libvirt.org/schemas/domain/qemu/1.0', attribute_dict={
+                'children': [create_element('arg', value=arg) for arg in shlex.split(self.vm_data['command_line_args'])]
+            }
+        )]
 
     def os_xml(self):
         children = [create_element(
@@ -33,6 +39,9 @@ class VMSupervisor(VMSupervisorBase):
     def devices_xml(self):
         boot_no = Nid(1)
         scsi_device_no = Nid(1)
+        usb_controller_no = Nid(1)
+        # nec-xhci is added by default for each domain by libvirt so we update our mapping accordingly
+        usb_controllers = {'nec-xhci': 0}
         virtual_device_no = Nid(1)
         devices = []
         for device in filter(lambda d: d.is_available(), self.devices):
@@ -42,6 +51,19 @@ class VMSupervisor(VMSupervisorBase):
                 else:
                     disk_no = scsi_device_no()
                 device_xml = device.xml(disk_number=disk_no, boot_number=boot_no())
+            elif isinstance(device, USB):
+                device_xml = []
+                if device.controller_type not in usb_controllers:
+                    usb_controllers[device.controller_type] = usb_controller_no()
+                    device_xml.append(create_element(
+                        'controller', type='usb', index=str(usb_controllers[device.controller_type]),
+                        model=device.controller_type)
+                    )
+                usb_device_xml = device.xml(controller_mapping=usb_controllers)
+                if isinstance(usb_device_xml, (tuple, list)):
+                    device_xml.extend(usb_device_xml)
+                else:
+                    device_xml.append(usb_device_xml)
             else:
                 device_xml = device.xml()
             devices.extend(device_xml if isinstance(device_xml, (tuple, list)) else [device_xml])

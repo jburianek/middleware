@@ -6,9 +6,11 @@ import copy
 import errno
 import traceback
 import types
+import urllib.parse
 
 from aiohttp import web
 
+from .auth import ApiKeySessionManagerCredentials, LoginPasswordSessionManagerCredentials
 from .client import ejson as json
 from .job import Job
 from .pipe import Pipes
@@ -16,31 +18,42 @@ from .schema import Error as SchemaError
 from .service_exception import adapt_exception, CallError, MatchNotFound, ValidationError, ValidationErrors
 
 
-async def authenticate(middleware, req, method, resource):
-
-    auth = req.headers.get('Authorization')
+async def authenticate(middleware, request, method, resource):
+    auth = request.headers.get('Authorization')
     if auth is None:
-        raise web.HTTPUnauthorized()
+        qs = urllib.parse.parse_qs(request.query_string)
+        if 'auth_token' in qs:
+            token = qs.get('auth_token')[0]
+        else:
+            return None
+    elif auth.startswith('Token '):
+        token = auth.split(' ', 1)[1]
+    else:
+        token = None
 
-    if auth.startswith('Basic '):
+    if token is not None:
+        token = await middleware.call('auth.get_token_for_action', token, method, resource)
+        if token is None:
+            raise web.HTTPForbidden()
+
+        return token
+    elif auth.startswith('Basic '):
         twofactor_auth = await middleware.call('auth.twofactor.config')
         if twofactor_auth['enabled']:
             raise web.HTTPUnauthorized(text='HTTP Basic Auth is unavailable when OTP is enabled')
 
         try:
-            username, password = base64.b64decode(auth[6:]).decode('utf8').split(':', 1)
+            username, password = base64.b64decode(auth[6:]).decode('utf-8').split(':', 1)
         except UnicodeDecodeError:
             raise web.HTTPBadRequest()
         except binascii.Error:
             raise web.HTTPUnauthorized()
 
-        try:
-            if not await middleware.call('auth.check_user', username, password):
-                raise web.HTTPUnauthorized()
-        except web.HTTPUnauthorized:
-            raise
-        except Exception:
+        user = await middleware.call('auth.authenticate', username, password)
+        if user is None:
             raise web.HTTPUnauthorized()
+
+        return LoginPasswordSessionManagerCredentials(user)
     elif auth.startswith('Bearer '):
         key = auth.split(' ', 1)[1]
 
@@ -48,10 +61,9 @@ async def authenticate(middleware, req, method, resource):
         if api_key is None:
             raise web.HTTPUnauthorized()
 
-        if not api_key.authorize(method, resource):
-            raise web.HTTPForbidden()
+        return ApiKeySessionManagerCredentials(api_key)
     else:
-        raise web.HTTPUnauthorized()
+        return None
 
 
 def normalize_query_parameter(value):
@@ -63,11 +75,13 @@ def normalize_query_parameter(value):
 
 class Application:
 
-    def __init__(self, host, remote_port):
+    def __init__(self, host, remote_port, authenticated_credentials):
         self.host = host
         self.remote_port = remote_port
         self.websocket = False
-        self.rest = self.authenticated = True
+        self.rest = True
+        self.authenticated = authenticated_credentials is not None
+        self.authenticated_credentials = authenticated_credentials
 
 
 class RESTfulAPI(object):
@@ -479,10 +493,14 @@ class Resource(object):
                     resource = info["formatter"][len("/api/v2.0"):]
                 else:
                     resource = None
+                authenticated_credentials = await authenticate(self.middleware, req, method.upper(), resource)
                 if not self.rest._methods[getattr(self, method)]['no_auth_required']:
-                    await authenticate(self.middleware, req, method.upper(), resource)
+                    if authenticated_credentials is None:
+                        raise web.HTTPUnauthorized()
+                    if not authenticated_credentials.authorize(method.upper(), resource):
+                        raise web.HTTPForbidden()
                 kwargs.update(dict(req.match_info))
-                return await do(method, req, resp, *args, **kwargs)
+                return await do(method, req, resp, authenticated_credentials, *args, **kwargs)
 
             return on_method
         return object.__getattribute__(self, attr)
@@ -555,7 +573,7 @@ class Resource(object):
 
         return [filters, options] if filters or options else []
 
-    async def do(self, http_method, req, resp, **kwargs):
+    async def do(self, http_method, req, resp, authenticated_credentials, **kwargs):
         assert http_method in ('delete', 'get', 'post', 'put')
 
         methodname = getattr(self, http_method)
@@ -566,6 +584,7 @@ class Resource(object):
             method_kwargs['app'] = Application(
                 req.headers.get('X-Real-Remote-Addr'),
                 req.headers.get('X-Real-Remote-Port'),
+                authenticated_credentials,
             )
 
         has_request_body = False

@@ -4,10 +4,13 @@ import os
 import subprocess
 import syslog
 
-from middlewared.schema import accepts, Bool, Dict, Int, List, Patch, returns, Str, ValidationErrors
-from middlewared.validators import Range
-from middlewared.service import private, SystemServiceService
 import middlewared.sqlalchemy as sa
+
+from middlewared.async_validators import validate_port
+from middlewared.common.ports import ServicePortDelegate
+from middlewared.schema import accepts, Bool, Dict, Int, List, Patch, returns, Str, ValidationErrors
+from middlewared.service import private, SystemServiceService
+from middlewared.validators import Range
 
 
 class SSHModel(sa.Model):
@@ -145,8 +148,8 @@ class SSHService(SystemServiceService):
         new = old.copy()
         new.update(data)
 
+        verrors = ValidationErrors()
         if new['bindiface']:
-            verrors = ValidationErrors()
             iface_choices = await self.middleware.call('ssh.bindiface_choices')
             invalid_ifaces = list(filter(lambda x: x not in iface_choices, new['bindiface']))
             if invalid_ifaces:
@@ -154,7 +157,9 @@ class SSHService(SystemServiceService):
                     'ssh_update.bindiface',
                     f'The following interfaces are not valid: {", ".join(invalid_ifaces)}',
                 )
-            verrors.check()
+
+        verrors.extend(await validate_port(self.middleware, 'ssh_update.tcpport', new['tcpport'], 'ssh'))
+        verrors.check()
 
         await self._update_service(old, new)
 
@@ -234,7 +239,16 @@ class SSHService(SystemServiceService):
             self.middleware.call_sync('datastore.update', 'services.ssh', old['id'], update, {'ha_sync': False})
 
 
+class SSHServicePortDelegate(ServicePortDelegate):
+
+    name = 'ssh'
+    namespace = 'ssh'
+    port_fields = ['tcpport']
+    title = 'SSH Service'
+
+
 async def setup(middleware):
+    await middleware.call('port.register_attachment_delegate', SSHServicePortDelegate(middleware))
     if await middleware.call('core.is_starting_during_boot'):
         await middleware.call('ssh.cleanup_keys')
         await middleware.call('ssh.generate_keys')

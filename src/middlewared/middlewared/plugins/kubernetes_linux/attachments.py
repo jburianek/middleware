@@ -1,6 +1,7 @@
 import os
 
 from middlewared.common.attachment import FSAttachmentDelegate
+from middlewared.common.ports import ServicePortDelegate
 
 
 class KubernetesFSAttachmentDelegate(FSAttachmentDelegate):
@@ -50,5 +51,16 @@ class KubernetesFSAttachmentDelegate(FSAttachmentDelegate):
             self.middleware.logger.error('Failed to start kubernetes')
 
 
+class KubernetesServicePortDelegate(ServicePortDelegate):
+
+    name = 'apps'
+    namespace = 'kubernetes'
+    title = 'Kubernetes Service'
+
+    async def get_ports_internal(self):
+        return [6443]
+
+
 async def setup(middleware):
     await middleware.call('pool.dataset.register_attachment_delegate', KubernetesFSAttachmentDelegate(middleware))
+    await middleware.call('port.register_attachment_delegate', KubernetesServicePortDelegate(middleware))

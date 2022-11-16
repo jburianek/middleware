@@ -1,19 +1,23 @@
-import crypt
 from datetime import datetime, timedelta
-import hmac
+import errno
 import re
 import socket
+import struct
 import time
 import warnings
 
 import psutil
 import pyotp
 
+from middlewared.auth import (SessionManagerCredentials, UserSessionManagerCredentials,
+                              UnixSocketSessionManagerCredentials, RootTcpSocketSessionManagerCredentials,
+                              LoginPasswordSessionManagerCredentials, ApiKeySessionManagerCredentials)
 from middlewared.schema import accepts, Bool, Datetime, Dict, Int, Patch, returns, Str
 from middlewared.service import (
     ConfigService, Service, filterable, filterable_returns, filter_list, no_auth_required,
     pass_app, private, cli_private, CallError,
 )
+from middlewared.service_exception import MatchNotFound
 import middlewared.sqlalchemy as sa
 from middlewared.utils.nginx import get_peer_process, get_remote_addr_port
 from middlewared.utils.crypto import generate_token
@@ -24,11 +28,11 @@ class TokenManager:
     def __init__(self):
         self.tokens = {}
 
-    def create(self, ttl, attributes=None):
+    def create(self, ttl, attributes, parent_credentials):
         attributes = attributes or {}
 
         token = generate_token(48, url_safe=True)
-        self.tokens[token] = Token(self, token, ttl, attributes)
+        self.tokens[token] = Token(self, token, ttl, attributes, parent_credentials)
         return self.tokens[token]
 
     def get(self, token):
@@ -47,11 +51,12 @@ class TokenManager:
 
 
 class Token:
-    def __init__(self, manager, token, ttl, attributes):
+    def __init__(self, manager, token, ttl, attributes, parent_credentials):
         self.manager = manager
         self.token = token
         self.ttl = ttl
         self.attributes = attributes
+        self.parent_credentials = parent_credentials
 
         self.last_used_at = time.monotonic()
 
@@ -71,6 +76,7 @@ class SessionManager:
     def login(self, app, credentials):
         if app.authenticated:
             self.sessions[app.session_id].credentials = credentials
+            app.authenticated_credentials = credentials
             return
 
         origin = self._get_origin(app)
@@ -146,43 +152,6 @@ class Session:
         }
 
 
-class SessionManagerCredentials:
-    def login(self):
-        pass
-
-    def is_valid(self):
-        return True
-
-    def authorize(self, method, resource):
-        return True
-
-    def notify_used(self):
-        pass
-
-    def logout(self):
-        pass
-
-
-class UnixSocketSessionManagerCredentials(SessionManagerCredentials):
-    pass
-
-
-class RootTcpSocketSessionManagerCredentials(SessionManagerCredentials):
-    pass
-
-
-class LoginPasswordSessionManagerCredentials(SessionManagerCredentials):
-    pass
-
-
-class ApiKeySessionManagerCredentials(SessionManagerCredentials):
-    def __init__(self, api_key):
-        self.api_key = api_key
-
-    def authorize(self, method, resource):
-        return self.api_key.authorize(method, resource)
-
-
 class TokenSessionManagerCredentials(SessionManagerCredentials):
     def __init__(self, token_manager, token):
         self.token_manager = token_manager
@@ -190,6 +159,9 @@ class TokenSessionManagerCredentials(SessionManagerCredentials):
 
     def is_valid(self):
         return self.token.is_valid()
+
+    def authorize(self, method, resource):
+        return self.token.parent_credentials.authorize(method, resource)
 
     def notify_used(self):
         self.token.notify_used()
@@ -286,10 +258,9 @@ class AuthService(Service):
     @returns(Bool(description='Is `true` if `username` was successfully validated with provided `password`'))
     async def check_user(self, username, password):
         """
-        Verify username and password (this will only validate root user's password and
-        would return `false` for any other user)
+        Verify username and password
         """
-        return False if username != 'root' else await self.check_password(username, password)
+        return await self.check_password(username, password)
 
     @accepts(Str('username'), Str('password'))
     @returns(Bool(description='Is `true` if `username` was successfully validated with provided `password`'))
@@ -297,18 +268,13 @@ class AuthService(Service):
         """
         Verify username and password
         """
-        try:
-            user = await self.middleware.call('datastore.query', 'account.bsdusers',
-                                              [('bsdusr_username', '=', username)], {'get': True})
-        except IndexError:
-            return False
-        if user['bsdusr_unixhash'] in ('x', '*'):
-            return False
-        return hmac.compare_digest(crypt.crypt(password, user['bsdusr_unixhash']), user['bsdusr_unixhash'])
+        return await self.middleware.call('auth.authenticate', username, password) is not None
 
+    @no_auth_required
     @accepts(Int('ttl', default=600, null=True), Dict('attrs', additional_attrs=True))
     @returns(Str('token'))
-    def generate_token(self, ttl, attrs):
+    @pass_app(rest=True)
+    def generate_token(self, app, ttl, attrs):
         """
         Generate a token to be used for authentication.
 
@@ -317,10 +283,13 @@ class AuthService(Service):
 
         `attrs` is a general purpose object/dictionary to hold information about the token.
         """
+        if not app.authenticated:
+            raise CallError('Not authenticated', errno.EACCES)
+
         if ttl is None:
             ttl = 600
 
-        token = self.token_manager.create(ttl, attrs)
+        token = self.token_manager.create(ttl, attrs, app.authenticated_credentials)
 
         return token.token
 
@@ -332,6 +301,37 @@ class AuthService(Service):
             }
         except KeyError:
             return None
+
+    @private
+    def get_token_for_action(self, token_id, method, resource):
+        if (token := self.token_manager.tokens.get(token_id)) is None:
+            return None
+
+        if token.attributes:
+            return None
+
+        if not token.parent_credentials.authorize(method, resource):
+            return None
+
+        return TokenSessionManagerCredentials(self.token_manager, token)
+
+    @private
+    def get_token_for_shell_application(self, token_id):
+        if (token := self.token_manager.tokens.get(token_id)) is None:
+            return None
+
+        if token.attributes:
+            return None
+
+        if not isinstance(token.parent_credentials, UserSessionManagerCredentials):
+            return None
+
+        if not token.parent_credentials.user['privilege']['web_shell']:
+            return None
+
+        return {
+            'username': token.parent_credentials.user['username'],
+        }
 
     @no_auth_required
     @accepts()
@@ -350,23 +350,25 @@ class AuthService(Service):
     async def login(self, app, username, password, otp_token):
         """
         Authenticate session using username and password.
-        Currently only root user is allowed.
         `otp_token` must be specified if two factor authentication is enabled.
         """
-        valid = await self.check_user(username, password)
+        user = await self.middleware.call('auth.authenticate', username, password)
         twofactor_auth = await self.middleware.call('auth.twofactor.config')
 
         if twofactor_auth['enabled']:
             # We should run auth.twofactor.verify nevertheless of check_user result to prevent guessing
             # passwords with a timing attack
-            valid &= await self.middleware.call(
+            if not await self.middleware.call(
                 'auth.twofactor.verify',
                 otp_token
-            )
+            ):
+                user = None
 
-        if valid:
-            self.session_manager.login(app, LoginPasswordSessionManagerCredentials())
-        return valid
+        if user is not None:
+            self.session_manager.login(app, LoginPasswordSessionManagerCredentials(user))
+            return True
+
+        return False
 
     @cli_private
     @no_auth_required
@@ -395,6 +397,9 @@ class AuthService(Service):
         token = self.token_manager.get(token)
         if token is None:
             return False
+
+        if token.attributes:
+            return None
 
         self.session_manager.login(app, TokenSessionManagerCredentials(self.token_manager, token))
         return True
@@ -564,8 +569,26 @@ def check_permission(middleware, app):
     """Authenticates connections coming from loopback and from root user."""
     sock = app.request.transport.get_extra_info('socket')
     if sock.family == socket.AF_UNIX:
-        # Unix socket is only allowed for root
-        AuthService.session_manager.login(app, UnixSocketSessionManagerCredentials())
+        peercred = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+        pid, uid, gid = struct.unpack('3i', peercred)
+        if uid == 0:
+            user = middleware.call_sync('auth.authenticate_root')
+        else:
+            try:
+                local_user = middleware.call_sync(
+                    'datastore.query',
+                    'account.bsdusers',
+                    [['bsdusr_uid', '=', uid]],
+                    {'get': True, 'prefix': 'bsdusr_'},
+                )
+            except MatchNotFound:
+                return
+
+            user = middleware.call_sync('auth.authenticate_local_user', local_user['id'], local_user['username'])
+            if user is None:
+                return
+
+        AuthService.session_manager.login(app, UnixSocketSessionManagerCredentials(user))
         return
 
     remote_addr, remote_port = get_remote_addr_port(app.request)
