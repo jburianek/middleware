@@ -20,11 +20,11 @@ def test_non_silent_service_start_failure():
     # service startup failure error reporting.
     call("service.stop", "ups")
 
-    time.sleep(2)
+    time.sleep(5)
 
     call("datastore.update", "services.ups", 1, {"ups_monuser": ""})
 
-    time.sleep(2)
+    time.sleep(5)
 
     with pytest.raises(CallError) as e:
         call("service.start", "ups", {"silent": False})
