@@ -1653,7 +1653,7 @@ class SharingSMBService(SharingService):
     @private
     async def add_path_local(self, data):
         if data['cluster_volname']:
-            data['path_local'] = f'CLUSTER:{data["cluster_volname"]}:{data["path"]}'
+            data['path_local'] = f'CLUSTER:{data["cluster_volname"]}/{data["path"]}'
         else:
             data['path_local'] = data['path']
 

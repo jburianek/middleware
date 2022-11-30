@@ -1108,17 +1108,15 @@ class SharingTaskService(CRUDService):
             verrors.add(name, f'{volname}: cluster volume does not exist.')
             return
 
-        if not path.startswith('/'):
-            verrors.add(name, f'{path}: path within cluster volume must be absolute.')
-            return
-
         try:
-            await self.middleware.call('filesystem.stat', f'CLUSTER:{volname}:{path}')
+            await self.middleware.call('filesystem.stat', f'CLUSTER:{volname}{path}')
         except CallError as e:
             if e.errno is errno.ENXIO:
                 verrors.add(name, f'{volname}: cluster volume is not mounted.')
             elif e.errno is errno.ENOENT:
-                verrors.add(name, f'{path}: path does not exist.')
+                # this is not treated as fatal error in `check_path_resides_within_volume`
+                # but the design decision may need further review
+                pass
             else:
                 raise
 
