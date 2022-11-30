@@ -1142,8 +1142,13 @@ class SharingTaskService(CRUDService):
             verrors.add(name, f'{loc.name}: path type is not allowed.')
 
         elif loc is FSLocation.CLUSTER:
-            volname, volpath  = strip_location_prefix(path).split(':', 1)
-            await self.validate_cluster_path(verrors, name, volname, volpath)
+            try:
+                volname, volpath = strip_location_prefix(path).split('/', 1)
+            except ValueError:
+                verrors.add(name, f'{path}: path within cluster volume must be specified.')
+            else:
+                volpath = os.path.join('/', volpath)
+                await self.validate_cluster_path(verrors, name, volname, volpath)
 
         elif loc is FSLocation.EXTERNAL:
             await self.validate_external_path(verrors, name, strip_location_prefix(path))
