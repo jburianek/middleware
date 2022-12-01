@@ -29,6 +29,7 @@ from middlewared.service_exception import (  # noqa
 from middlewared.settings import conf
 from middlewared.utils import filter_list, MIDDLEWARE_RUN_DIR, osc
 from middlewared.utils.debug import get_frame_details, get_threads_stacks
+from middlewared.utils.path import path_location, strip_location_prefix
 from middlewared.logger import Logger, reconfigure_logging, stop_logging
 from middlewared.job import Job
 from middlewared.pipe import Pipes
@@ -1096,13 +1097,20 @@ class SharingTaskService(CRUDService):
         }
 
     @private
-    async def validate_path_field(self, data, schema, verrors, *, allow_cluster=False):
+    async def validate_external_path(self, verrors, name, path):
+        verrors.add(name, 'Service does not allow external paths')
+
+    @private
+    async def validate_path_field(self, data, schema, verrors, *, permitted_locations=None):
         name = f'{schema}.{self.path_field}'
         path = data[self.path_field]
+        loc = path_location(path)
 
-        if await self.middleware.call('filesystem.is_cluster_path', path):
-            if not allow_cluster:
-                verrors.add(name, 'Cluster path is not allowed')
+        if loc not in (permitted_locations or ['LOCAL']):
+            verrors.add(name, f'{loc}: paths are not allowed.')
+
+        elif loc == 'EXTERNAL':
+            await self.validate_external_path(verrors, name, strip_location_prefix(path))
         else:
             await check_path_resides_within_volume(verrors, self.middleware, name, path)
 
@@ -2190,16 +2198,17 @@ class CoreService(Service):
 
             try:
                 msg = await self.middleware.call(method, *p)
-                error = None
+                status = {"result": msg, "error": None}
 
                 if isinstance(msg, Job):
                     b_job = msg
-                    msg = await msg.wait()
+                    status["job_id"] = b_job.id
+                    status["result"] = await msg.wait()
 
                     if b_job.error:
-                        error = b_job.error
+                        status["error"] = b_job.error
 
-                statuses.append({"result": msg, "error": error})
+                statuses.append(status)
             except Exception as e:
                 statuses.append({"result": None, "error": str(e)})
 
