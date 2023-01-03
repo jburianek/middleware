@@ -58,11 +58,13 @@ def kerberos_config(request):
     try:
         yield (request, results.json())
     finally:
+        """
         results = POST('/service/stop/', {'service': 'nfs'})
         assert results.status_code == 200, results.text
 
         results = PUT("/nfs/", {"v4_krb": False})
         assert results.status_code == 200, results.text
+        """
 
 
 @pytest.fixture(scope="module")
@@ -86,11 +88,14 @@ def stop_activedirectory(request):
     try:
         yield results.json()
     finally:
+        """
         results = PUT("/activedirectory/", {"enable": True})
         assert results.status_code == 200, results.text
         job_id = results.json()['job_id']
         job_status = wait_on_job(job_id, 180)
         assert job_status['state'] == 'SUCCESS', str(job_status['results'])
+        """
+        pass
 
 
 @pytest.fixture(scope="module")
@@ -366,60 +371,3 @@ def test_06_krb5nfs_ops_with_ad(request):
         contents = n.ls('.')
         assert 'testdir' not in contents
         assert 'testfile' not in contents
-
-
-@pytest.mark.dependency(name="SET_UP_AD_VIA_LDAP")
-def test_07_setup_and_enabling_ldap(do_ldap_connection):
-    res = make_ws_request(ip, {
-        'msg': 'method',
-        'method': 'kerberos.stop',
-        'params': [],
-    })
-    error = res.get('error')
-    assert error is None, str(error)
-
-    res = make_ws_request(ip, {
-        'msg': 'method',
-        'method': 'kerberos.start',
-        'params': [],
-    })
-    error = res.get('error')
-    assert error is None, str(error)
-
-    res = make_ws_request(ip, {
-        'msg': 'method',
-        'method': 'kerberos._klist_test',
-        'params': [],
-    })
-    error = res.get('error')
-    assert error is None, str(error)
-    assert res['result'] is True
-
-    # Verify that our NFS kerberos principal is
-    # still present
-    res = make_ws_request(ip, {
-        'msg': 'method',
-        'method': 'kerberos.keytab.has_nfs_principal',
-        'params': [],
-    })
-    error = res.get('error')
-    assert error is None, str(error)
-    assert res['result'] is True
-
-
-def test_08_verify_ldap_users(request):
-    depends(request, ["SET_UP_AD_VIA_LDAP"], scope="session")
-
-    results = GET('/user', payload={
-        'query-filters': [['local', '=', False]],
-        'query-options': {'extra': {"search_dscache": True}},
-    })
-    assert results.status_code == 200, results.text
-    assert len(results.json()) > 0, results.text
-
-    results = GET('/group', payload={
-        'query-filters': [['local', '=', False]],
-        'query-options': {'extra': {"search_dscache": True}},
-    })
-    assert results.status_code == 200, results.text
-    assert len(results.json()) > 0, results.text

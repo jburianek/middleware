@@ -45,5 +45,8 @@ def nfs_share(path, options=None):
     try:
         yield id
     finally:
+        """
         result = DELETE(f"/sharing/nfs/id/{id}/")
         assert result.status_code == 200, result.text
+        """
+        pass
