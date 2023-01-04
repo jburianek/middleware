@@ -41,6 +41,15 @@ class EnclosureDetectionService(Service):
 
             return self.HARDWARE, self.NODE
 
+# Viking info via VSS2249RQ Management Over IPMI document Section 5.5 page 15
+        product = self.middleware.call_sync('system.dmidecode_info')['system-product-name']
+        if "TRUENAS-F1" in product:
+            self.HARDWARE = 'F1'
+            proc = subprocess.run(['ipmitool', 'raw',  '0x3c', '0x0e'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc = proc.stdout.decode() if proc.stdout else ''
+            self.NODE = 'A' if proc[5] == '0' else 'B'
+            return self.HARDWARE, self.NODE
+
         # Gather the PCI address for all enclosurers
         # detected by the kernel
         enclosures = self.middleware.call_sync("enclosure.list_ses_enclosures")

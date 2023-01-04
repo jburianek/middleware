@@ -164,6 +164,7 @@ class FailoverService(ConfigService):
         Returns the hardware type for an HA system.
           ECHOSTREAM
           ECHOWARP
+          F1
           PUMA
           BHYVE
           MANUAL
