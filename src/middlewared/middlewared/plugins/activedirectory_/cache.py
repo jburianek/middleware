@@ -2,8 +2,8 @@ import grp
 import os
 import pwd
 import shutil
-import tdb
 
+from base64 import b64decode
 from middlewared.plugins.smb import SMBPath
 from middlewared.plugins.idmap_.utils import WBClient
 from middlewared.service import Service, private, job
@@ -17,14 +17,16 @@ class ActiveDirectoryService(Service):
 
     @private
     def get_gencache_sid(self, tdb_key):
-        gencache = tdb.Tdb('/tmp/gencache.tdb', 0, tdb.DEFAULT, os.O_RDONLY)
-        try:
-            tdb_val = gencache.get(tdb_key)
-        finally:
-            gencache.close()
+        entry = self.middleware.call('tdb.fetch', {
+            'name': 'gencache.tdb',
+            'key': tdb_key,
+            'tdb-options': {'backend': 'VOLATILE', 'data_type': 'BYTES'}
+        })
 
-        if tdb_val is None:
+        if entry is None:
             return None
+
+        tdb_val = b64decode(entry)
 
         decoded_sid = tdb_val[8:-5].decode()
         if decoded_sid == '-':
@@ -37,20 +39,20 @@ class ActiveDirectoryService(Service):
         out = []
         known_doms = [x['domain_info']['name'] for x in idmap_domain]
 
-        gencache = tdb.Tdb('/tmp/gencache.tdb', 0, tdb.DEFAULT, os.O_RDONLY)
-        try:
-            for k in gencache.keys():
-                if k[:8] != b'NAME2SID':
-                    continue
-                key = k[:-1].decode()
-                name = key.split('/', 1)[1]
-                dom = name.split('\\')[0]
-                if dom not in known_doms:
-                    continue
+        entries = self.middleware.call('tdb.entries', {
+            'name': 'gencache.tdb',
+            'tdb-options': {'backend': 'VOLATILE', 'data_type': 'BYTES'}
+        })
+        for k in entries:
+            if k[:8] != 'NAME2SID':
+                continue
+            key = k[:-1]
+            name = key.split('/', 1)[1]
+            dom = name.split('\\')[0]
+            if dom not in known_doms:
+                continue
 
-                out.append(name)
-        finally:
-            gencache.close()
+            out.append(name)
 
         return out
 
@@ -60,7 +62,11 @@ class ActiveDirectoryService(Service):
         entry_type = data.get('entry_type')
         do_wbinfo = data.get('cache_enabled', True)
 
-        shutil.copyfile(f'{SMBPath.LOCKDIR.platform()}/gencache.tdb', '/tmp/gencache.tdb')
+        os.makedirs('/var/run/tdb/volatile', 0o700, exist_ok=True) 
+        shutil.copyfile(
+            f'{SMBPath.LOCKDIR.platform()}/gencache.tdb',
+            '/var/run/tdb/volatile/gencache.tdb'
+        )
 
         domain_info = self.middleware.call_sync(
             'idmap.query', [], {'extra': {'additional_information': ['DOMAIN_INFO']}}
@@ -101,7 +107,7 @@ class ActiveDirectoryService(Service):
             """
             Try to look up in gencache before subprocess to wbinfo.
             """
-            entry['sid'] = self.get_gencache_sid((tdb_key.encode() + b"\x00"))
+            entry['sid'] = self.get_gencache_sid(tdb_key)
             if not entry['sid']:
                 entry['sid'] = self.middleware.call_sync('idmap.unixid_to_sid', {
                     'id_type': entry_type,
