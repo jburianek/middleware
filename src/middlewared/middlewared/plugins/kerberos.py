@@ -168,17 +168,30 @@ class KerberosService(TDBWrapConfigService):
         return await self.config()
 
     @private
+    @accepts(Ref('kerberos-options'))
+    async def ccache_path(self, data):
+        krb_ccache = krb5ccache[data['ccache']]
+
+        path_out = krb_ccache.value
+        if krb_ccache == krb5ccache.USER:
+            path_out += str(data['ccache_uid'])
+
+        return path_out
+
+    @private
     @accepts(Dict(
         'kerberos-options',
         Str('ccache', enum=[x.name for x in krb5ccache], default=krb5ccache.SYSTEM.name),
+        Int('ccache_uid', default=0),
         register=True
     ))
     async def _klist_test(self, data):
         """
         Returns false if there is not a TGT or if the TGT has expired.
         """
-        krb_ccache = krb5ccache[data['ccache']]
-        klist = await run(['klist', '-s', '-c', krb_ccache.value], check=False)
+        ccache_path = await self.ccache_path(data)
+
+        klist = await run(['klist', '-s', '-c', ccache_path], check=False)
         if klist.returncode != 0:
             return False
 
@@ -396,8 +409,7 @@ class KerberosService(TDBWrapConfigService):
             'kerberos-options',
             'kinit-options',
             ('add', {'name': 'renewal_period', 'type': 'int', 'default': 7}),
-            ('add', {'name': 'lifetime', 'type': 'int', 'default': 0})
-            ('add', {'name': 'ccache_uid', 'type': 'int', 'default': 0})
+            ('add', {'name': 'lifetime', 'type': 'int', 'default': 0}),
             ('add', {
                 'name': 'kdc_override',
                 'type': 'dict',
@@ -410,6 +422,7 @@ class KerberosService(TDBWrapConfigService):
         creds = data['krb5_cred']
         has_principal = 'kerberos_principal' in creds
         ccache_uid = data['kinit-options']['ccache_uid']
+        ccache_path = await self.ccache_path(data['kinit-options'])
 
         if ccache == krb5ccache.USER:
             if has_principal:
@@ -417,10 +430,6 @@ class KerberosService(TDBWrapConfigService):
 
             if ccache_uid == 0:
                 raise CallError('User-specific ccache not permitted for uid 0')
-
-            ccache_path = f'{ccache.value}{ccache_uid}'
-        else:
-            ccache_path = ccache.value
 
         cmd = ['kinit', '-V', '-r', str(data['kinit-options']['renewal_period']), '-c', ccache_path]
         lifetime = data['kinit-options']['lifetime']

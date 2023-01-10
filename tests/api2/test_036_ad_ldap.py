@@ -10,7 +10,7 @@ sys.path.append(apifolder)
 from assets.REST.directory_services import active_directory, ldap, override_nameservers
 from auto_config import ip, hostname, password, user
 from contextlib import contextmanager
-from functions import GET, POST, PUT, make_ws_request, wait_on_job
+from functions import GET, POST, PUT, SSH_TEST, make_ws_request, wait_on_job
 from pytest_dependency import depends
 
 try:
@@ -196,8 +196,61 @@ def test_03_kerberos_nfs4_spn_add(kerberos_config):
     assert res['result'] is True
 
 
+@pytest.mark.dependency(name="AD_LDAP_USER_CCACHE")
+def test_04_kinit_as_ad_user(request):
+    """
+    This test does kinit as our test user that we will
+    use to verify NFS4 + KRB5 work correctly.
+    """
+    depends(kerberos_config[0], ["AD_CONFIGURED"], scope="session")
+
+    results = POST("/user/get_user_obj/", {'username': ADUSERNAME})
+    assert results.status_code == 200, results.text
+    assert results.json()['pw_name'] == AD_USER, results.text
+    target_uid = results.json()['pw_gid']
+
+    kinit_opts = {'ccache': 'USER', 'ccache_uid': target_uid}
+
+    res = make_ws_request(ip, {
+        'msg': 'method',
+        'method': 'kerberos.get_cred',
+        'params': [{
+            'dstype': 'DS_TYPE_ACTIVEDIRECTORY',
+            'conf': {
+                'domainname': AD_DOMAIN,
+                'bindname': ADUSERNAME,
+                'bindpw': ADPASSWORD,
+            }
+        }],
+    })
+    error = res.get('error')
+    assert error is None, str(error)
+    cred = res['result']
+
+    res = make_ws_request(ip, {
+        'msg': 'method',
+        'method': 'kerberos.do_kinit',
+        'params': [{
+            'krb5_cred': cred,
+            'kinit-options': kinit_opts
+        }],
+    })
+
+    res = make_ws_request(ip, {
+        'msg': 'method',
+        'method': 'kerberos._klist_test',
+        'params': [kinit_opts],
+    })
+    error = res.get('error')
+    assert error is None, str(error)
+    assert res['result'] is True
+
+    res = SSH_TEST(f'test -f /tmp/krb5cc_{target_uid}', user, password, ip)
+    assert res['result'] is True, results['stderr']
+
+
 @pytest.mark.dependency(name="SET_UP_AD_VIA_LDAP")
-def test_04_setup_and_enabling_ldap(do_ldap_connection):
+def test_05_setup_and_enabling_ldap(do_ldap_connection):
     res = make_ws_request(ip, {
         'msg': 'method',
         'method': 'kerberos.stop',
@@ -235,7 +288,7 @@ def test_04_setup_and_enabling_ldap(do_ldap_connection):
     assert res['result'] is True
 
 
-def test_05_verify_ldap_users(request):
+def test_06_verify_ldap_users(request):
     depends(request, ["SET_UP_AD_VIA_LDAP"], scope="session")
 
     results = GET('/user', payload={
