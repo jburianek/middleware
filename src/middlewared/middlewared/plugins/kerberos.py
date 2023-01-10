@@ -422,7 +422,10 @@ class KerberosService(TDBWrapConfigService):
         creds = data['krb5_cred']
         has_principal = 'kerberos_principal' in creds
         ccache_uid = data['kinit-options']['ccache_uid']
-        ccache_path = await self.ccache_path(data['kinit-options'])
+        ccache_path = await self.ccache_path({
+            'ccache': data['kinit-options']['ccache'],
+            'ccache_uid': data['kinit-options']['ccache_uid']
+        })
 
         if ccache == krb5ccache.USER:
             if has_principal:
