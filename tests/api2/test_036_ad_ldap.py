@@ -210,7 +210,7 @@ def test_04_kinit_as_ad_user(request):
     This test does kinit as our test user that we will
     use to verify NFS4 + KRB5 work correctly.
     """
-    depends(kerberos_config[0], ["AD_CONFIGURED"], scope="session")
+    depends(request, ["AD_CONFIGURED"], scope="session")
 
     results = POST("/user/get_user_obj/", {'username': ADUSERNAME})
     assert results.status_code == 200, results.text
