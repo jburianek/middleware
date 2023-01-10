@@ -12,7 +12,7 @@ from assets.REST.pool import dataset
 from auto_config import ip, hostname, password, pool_name, user
 from contextlib import contextmanager
 from functions import GET, POST, PUT, SSH_TEST, make_ws_request, wait_on_job
-from protocols import nfs_share
+from protocols import nfs_share, SSH_NFS
 from pytest_dependency import depends
 
 try:
@@ -234,7 +234,7 @@ def test_03_kerberos_nfs4_spn_add(kerberos_config):
 
 
 @pytest.mark.dependency(name="AD_LDAP_USER_CCACHE")
-def test_04_kinit_as_ad_user(setup_nfs_share):
+def test_05_kinit_as_ad_user(setup_nfs_share):
     """
     Set up an NFS share and ensure that permissions are
     set correctly to allow writes via out test user.
@@ -285,8 +285,32 @@ def test_04_kinit_as_ad_user(setup_nfs_share):
     assert res['result'] is True, results['stderr']
 
 
+def test_06_krb5nfs_ops_with_ad(request):
+    with SSH_NFS(
+        f'{hostname}@{AD_DOMAIN}',
+        f'{pool_name}/NFSKRB5',
+        vers=4,
+        mount_user=user,
+        mount_password=password,
+        ip=ip,
+        kerberos=True,
+        user=f'{ADUSERNAME}@{AD_DOMAIN}',
+        password=ADPASSWORD,
+    ) as n:
+        n.create('testfile')
+        n.mkdir('testdir')
+        contents = n.ls('.')
+        assert 'testdir' in contents
+        assert 'testfile' in contents
+
+        n.unlink('testfile')
+        n.rmdir('testdir')
+        contents = n.ls('.')
+        assert 'testdir' not in contents
+        assert 'testfile' not in contents
+
 @pytest.mark.dependency(name="SET_UP_AD_VIA_LDAP")
-def test_05_setup_and_enabling_ldap(do_ldap_connection):
+def test_07_setup_and_enabling_ldap(do_ldap_connection):
     res = make_ws_request(ip, {
         'msg': 'method',
         'method': 'kerberos.stop',
@@ -324,7 +348,7 @@ def test_05_setup_and_enabling_ldap(do_ldap_connection):
     assert res['result'] is True
 
 
-def test_06_verify_ldap_users(request):
+def test_08_verify_ldap_users(request):
     depends(request, ["SET_UP_AD_VIA_LDAP"], scope="session")
 
     results = GET('/user', payload={
