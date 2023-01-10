@@ -78,7 +78,7 @@ class NFS(object):
 class SSH_NFS(NFS):
 
     def __init__(self, hostname, path, **kwargs):
-        super().__init__(hostname, path, kwargs)
+        super().__init__(hostname, path, **kwargs)
         self._mount_user = kwargs.get('mount_user', self._user)
         self._mount_password = kwargs.get('mount_password', self._password)
 
