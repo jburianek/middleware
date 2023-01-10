@@ -8,9 +8,11 @@ apifolder = os.getcwd()
 sys.path.append(apifolder)
 
 from assets.REST.directory_services import active_directory, ldap, override_nameservers
-from auto_config import ip, hostname, password, user
+from assets.REST.pool import dataset
+from auto_config import ip, hostname, password, pool_name, user
 from contextlib import contextmanager
 from functions import GET, POST, PUT, SSH_TEST, make_ws_request, wait_on_job
+from protocols import nfs_share
 from pytest_dependency import depends
 
 try:
@@ -141,6 +143,33 @@ def do_ldap_connection(request):
 
 
 @pytest.fixture(scope="module")
+def setup_nfs_share(request):
+    full = {'BASIC': 'FULL_CONTROL'}
+    modify = {'BASIC': 'MODIFY'}
+    read = {'BASIC': 'READ'}
+    inherit = {'BASIC': 'INHERIT'}
+
+    results = POST("/user/get_user_obj/", {'username': f'{ADUSERNAME}@{AD_DOMAIN}'})
+    assert results.status_code == 200, results.text
+    target_uid = results.json()['pw_gid']
+
+    target_acl = [
+        {'tag': 'owner@', 'id': -1, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
+        {'tag': 'group@', 'id': -1, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
+        {'tag': 'everyone@', 'id': -1, 'perms': read, 'flags': inherit, 'type': 'ALLOW'},
+        {'tag': 'USER', 'id': target_uid, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
+    ]
+    with dataset(
+        pool_name,
+        'NFSKRB5',
+        options={'acltype': 'NFSV4'},
+        acl=target_acl
+    ) as ds:
+        with nfs_share(ds['mountpoint'], options={'comment': 'KRB Functional Test Share'}) as share:
+            yield (request, {'share': share, 'uid': target_uid})
+
+
+@pytest.fixture(scope="module")
 def set_ad_nameserver(request):
     with override_nameservers(ADNameServer) as ns:
         yield (request, ns)
@@ -205,18 +234,18 @@ def test_03_kerberos_nfs4_spn_add(kerberos_config):
 
 
 @pytest.mark.dependency(name="AD_LDAP_USER_CCACHE")
-def test_04_kinit_as_ad_user(request):
+def test_04_kinit_as_ad_user(setup_nfs_share):
     """
-    This test does kinit as our test user that we will
-    use to verify NFS4 + KRB5 work correctly.
+    Set up an NFS share and ensure that permissions are
+    set correctly to allow writes via out test user.
+
+    This test does kinit as our test user so that we have
+    kerberos ticket that we will use to verify NFS4 + KRB5
+    work correctly.
     """
-    depends(request, ["AD_CONFIGURED"], scope="session")
+    depends(setup_nfs_share[0], ["AD_CONFIGURED"], scope="session")
 
-    results = POST("/user/get_user_obj/", {'username': f'{ADUSERNAME}@{AD_DOMAIN}'})
-    assert results.status_code == 200, results.text
-    target_uid = results.json()['pw_gid']
-
-    kinit_opts = {'ccache': 'USER', 'ccache_uid': target_uid}
+    kinit_opts = {'ccache': 'USER', 'ccache_uid': setup_nfs_share[1]['uid']}
 
     res = make_ws_request(ip, {
         'msg': 'method',
@@ -252,7 +281,7 @@ def test_04_kinit_as_ad_user(request):
     assert error is None, str(error)
     assert res['result'] is True
 
-    res = SSH_TEST(f'test -f /tmp/krb5cc_{target_uid}', user, password, ip)
+    res = SSH_TEST(f'test -f /tmp/krb5cc_{setup_nfs_share[1]["uid"]}', user, password, ip)
     assert res['result'] is True, results['stderr']
 
 
