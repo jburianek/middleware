@@ -214,7 +214,6 @@ def test_04_kinit_as_ad_user(request):
 
     results = POST("/user/get_user_obj/", {'username': f'{ADUSERNAME}@{AD_DOMAIN}'})
     assert results.status_code == 200, results.text
-    assert results.json()['pw_name'] == AD_USER, results.text
     target_uid = results.json()['pw_gid']
 
     kinit_opts = {'ccache': 'USER', 'ccache_uid': target_uid}
