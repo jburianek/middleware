@@ -149,6 +149,14 @@ def set_ad_nameserver(request):
 def test_01_set_nameserver_for_ad(set_ad_nameserver):
     assert set_ad_nameserver[1]['nameserver1'] == ADNameServer
 
+    res = make_ws_request(ip, {
+        'msg': 'method',
+        'method': 'core.notify_postinit',
+        'params': [],
+    })
+    error = res.get('error')
+    assert error is None, str(error)
+
 
 @pytest.mark.dependency(name="AD_CONFIGURED")
 def test_02_enabling_activedirectory(do_ad_connection):
