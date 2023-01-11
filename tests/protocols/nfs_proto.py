@@ -348,7 +348,7 @@ class SSH_NFS(NFS):
         cmd = ['mount.nfs', '-o', mnt_opts, f'{self._hostname}:{self._path}', self._localpath]
         do_mount = SSH_TEST(" ".join(cmd), self._mount_user, self._mount_password, self._ip)
         if do_mount['result'] == False:
-            raise RuntimeError(do_mount['output'])
+            raise RuntimeError(do_mount['stderr'])
 
         self._mounted = True
 
