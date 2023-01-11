@@ -286,8 +286,19 @@ def test_05_kinit_as_ad_user(setup_nfs_share):
 
 
 def test_06_krb5nfs_ops_with_ad(request):
+    my_fqdn = f'{hostname.strip()}@{AD_DOMAIN}'
+
+    res = make_ws_request(ip, {
+        'msg': 'method',
+        'method': 'dnsclient.forward_lookup',
+        'params': [{'names': [my_fqdn]}],
+    })
+    error = res.get('error')
+    assert error is None, str(error)
+    assert len(res['result']) == 1
+
     with SSH_NFS(
-        f'{hostname}@{AD_DOMAIN}',
+        my_fqdn,
         f'{pool_name}/NFSKRB5',
         vers=4,
         mount_user=user,
