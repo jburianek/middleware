@@ -284,6 +284,10 @@ def test_05_kinit_as_ad_user(setup_nfs_share):
     res = SSH_TEST(f'test -f /tmp/krb5cc_{setup_nfs_share[1]["uid"]}', user, password, ip)
     assert res['result'] is True, results['stderr']
 
+    payload = {"service": "nfs"}
+    results = POST('/service/restart/', {'service': 'nfs'})
+    assert results.status_code == 200, results.text
+
 
 def test_06_krb5nfs_ops_with_ad(request):
     my_fqdn = f'{hostname.strip()}.{AD_DOMAIN}'
