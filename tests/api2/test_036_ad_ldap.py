@@ -305,7 +305,7 @@ def test_06_krb5nfs_ops_with_ad(request):
 
     with SSH_NFS(
         my_fqdn,
-        f'{pool_name}/NFSKRB5',
+        f'/mnt/{pool_name}/NFSKRB5',
         vers=4,
         mount_user=user,
         mount_password=password,
