@@ -295,7 +295,9 @@ def test_06_krb5nfs_ops_with_ad(request):
     })
     error = res.get('error')
     assert error is None, str(error)
-    assert len(res['result']) == 1
+
+    addresses = [rdata['address'] for rdata in res['result']]
+    assert ip in addresses
 
     with SSH_NFS(
         my_fqdn,
@@ -319,6 +321,7 @@ def test_06_krb5nfs_ops_with_ad(request):
         contents = n.ls('.')
         assert 'testdir' not in contents
         assert 'testfile' not in contents
+
 
 @pytest.mark.dependency(name="SET_UP_AD_VIA_LDAP")
 def test_07_setup_and_enabling_ldap(do_ldap_connection):
