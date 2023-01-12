@@ -286,7 +286,7 @@ def test_05_kinit_as_ad_user(setup_nfs_share):
 
 
 def test_06_krb5nfs_ops_with_ad(request):
-    my_fqdn = f'{hostname.strip()}@{AD_DOMAIN}'
+    my_fqdn = f'{hostname.strip()}.{AD_DOMAIN}'
 
     res = make_ws_request(ip, {
         'msg': 'method',
