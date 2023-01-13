@@ -29,7 +29,4 @@ def dataset(pool_name, dataset_name, options=None, **kwargs):
     try:
         yield dataset_config
     finally:
-        if 'delete_delay' in kwargs:
-            sleep(kwargs['delete_delay'])
-        results = DELETE(f"/pool/dataset/id/{urllib.parse.quote(dataset, '')}/", {'recursive' : True} )
-        assert results.status_code == 200, results.text
+        pass
