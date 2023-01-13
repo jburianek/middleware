@@ -151,12 +151,12 @@ def setup_nfs_share(request):
 
     results = POST("/user/get_user_obj/", {'username': f'{ADUSERNAME}@{AD_DOMAIN}'})
     assert results.status_code == 200, results.text
-    target_uid = results.json()['pw_gid']
+    target_uid = results.json()['pw_uid']
 
     target_acl = [
         {'tag': 'owner@', 'id': -1, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
         {'tag': 'group@', 'id': -1, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
-        {'tag': 'everyone@', 'id': -1, 'perms': read, 'flags': inherit, 'type': 'ALLOW'},
+        {'tag': 'everyone@', 'id': -1, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
         {'tag': 'USER', 'id': target_uid, 'perms': full, 'flags': inherit, 'type': 'ALLOW'},
     ]
     with dataset(
