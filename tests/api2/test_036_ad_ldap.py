@@ -165,7 +165,10 @@ def setup_nfs_share(request):
         options={'acltype': 'NFSV4'},
         acl=target_acl
     ) as ds:
-        with nfs_share(ds['mountpoint'], options={'comment': 'KRB Functional Test Share'}) as share:
+        with nfs_share(ds['mountpoint'], options={
+            'comment': 'KRB Functional Test Share',
+            'security': ['KRB5', 'KRB5I', 'KRB5P'],
+        }) as share:
             yield (request, {'share': share, 'uid': target_uid})
 
 
