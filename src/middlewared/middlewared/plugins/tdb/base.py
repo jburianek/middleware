@@ -265,6 +265,15 @@ class TDBService(Service, TDBMixin, SchemaMixin):
         return
 
     @accepts(Dict(
+        'tdb-health',
+        Str('name', required=True),
+        Ref('tdb-options'),
+    ))
+    def health(self, data):
+        with self.get_connection(data['name'], data['tdb-options']) as tdb_handle:
+            return tdb_handle.health()
+
+    @accepts(Dict(
         'tdb-upgrade',
         Str('name', required=True),
         Ref('tdb-options'),
