@@ -125,27 +125,40 @@ class filters(object):
         '!$': lambda x, y: x is not None and not x.endswith(y),
     }
 
-    def filterop_dict(self, i, f):
-        if len(f) != 3:
-            raise ValueError(f'Invalid filter {f}')
-        name, op, value = f
-        if op not in self.opmap:
-            raise ValueError('Invalid operation: {}'.format(op))
+    def validate_filters(self, filters):
+        out = []
+        for f in filters:
+            if len(f) == 2:
+                op, value = f
+                if op != 'OR':
+                    raise ValueError(f'Invalid operation: {op}')
 
+                if len(value) < 2:
+                    raise ValueError('OR filter requires at least two options.')
+
+                self.validate_filters(value)
+                continue
+
+            elif len(f) != 3:
+                raise ValueError(f'Invalid filter {f}')
+
+            if f[1] not in self.opmap:
+                raise ValueError('Invalid operation: {}'.format(f[1]))
+
+    def filterop_dict(self, i, f):
+        name, op, value = f
         source = get(i, name)
         if self.opmap[op](source, value):
             return True
+
         return False
 
     def filterop(self, i, f):
-        if len(f) != 3:
-            raise ValueError(f'Invalid filter {f}')
         name, op, value = f
-        if op not in self.opmap:
-            raise ValueError('Invalid operation: {}'.format(op))
         source = getattr(i, name)
         if self.opmap[op](source, value):
             return True
+
         return False
 
     def get_filterop(self, _list):
@@ -165,16 +178,15 @@ class filters(object):
             valid = True
             for f in filters:
                 if len(f) == 2:
+                    # OR parsing
                     op, value = f
-                    if op == 'OR':
-                        for f in value:
-                            if filterop(i, f):
-                                break
-                        else:
-                            valid = False
+                    for f in value:
+                        if filterop(i, f):
                             break
                     else:
-                        raise ValueError(f'Invalid operation: {op}')
+                        valid = False
+                        break
+
                 elif not filterop(i, f):
                     valid = False
                     break
@@ -186,6 +198,7 @@ class filters(object):
                 entry = self.do_select([i], select)[0]
             else:
                 entry = i
+
             rv.append(entry)
             if options.get('get') is True:
                 break
@@ -233,6 +246,7 @@ class filters(object):
 
         rv = []
         if filters:
+            self.validate_filters(filters)
             rv = self.do_filters(_list, filters, options, select)
             if rv and options.get('get') is True:
                 return rv[0]
