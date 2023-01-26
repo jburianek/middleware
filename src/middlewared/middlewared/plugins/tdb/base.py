@@ -25,7 +25,7 @@ class TDBService(Service, TDBMixin, SchemaMixin):
         private = True
 
     @private
-    def validate_tdb_options(self, name, options):
+    def validate_tdb_options(self, name, options, skip_health_check):
         if options['service_version']['major'] > 0 or options['service_version']['minor'] > 0:
             if options['tdb_type'] == 'BASIC':
                 raise CallError(
@@ -33,7 +33,7 @@ class TDBService(Service, TDBMixin, SchemaMixin):
                     errno.EINVAL
                 )
 
-        if not options['cluster']:
+        if not options['cluster'] or skip_health_check:
             return
 
         healthy = self.middleware.call_sync('ctdb.general.healthy')
@@ -50,8 +50,8 @@ class TDBService(Service, TDBMixin, SchemaMixin):
 
     @private
     @contextmanager
-    def get_connection(self, name, options):
-        self.validate_tdb_options(name, options)
+    def get_connection(self, name, options, skip_health_check=False):
+        self.validate_tdb_options(name, options, skip_health_check)
 
         entry = self.handles.setdefault(name, {
             'name': name,
@@ -197,7 +197,7 @@ class TDBService(Service, TDBMixin, SchemaMixin):
         Ref('tdb-options'),
     ))
     def config(self, data):
-        with self.get_connection(data['name'], data['tdb-options']) as tdb_handle:
+        with self.get_connection(data['name'], data['tdb-options'], True) as tdb_handle:
             data = self._config_config(tdb_handle)
 
         return data
@@ -234,7 +234,7 @@ class TDBService(Service, TDBMixin, SchemaMixin):
         Ref('tdb-options'),
     ))
     def query(self, data):
-        with self.get_connection(data['name'], data['tdb-options']) as tdb_handle:
+        with self.get_connection(data['name'], data['tdb-options'], True) as tdb_handle:
             data = self._query(tdb_handle, data['query-filters'], data['query-options'])
 
         return data
@@ -270,7 +270,7 @@ class TDBService(Service, TDBMixin, SchemaMixin):
         Ref('tdb-options'),
     ))
     def health(self, data):
-        with self.get_connection(data['name'], data['tdb-options']) as tdb_handle:
+        with self.get_connection(data['name'], data['tdb-options'], True) as tdb_handle:
             return tdb_handle.health()
 
     @accepts(Dict(

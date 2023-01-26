@@ -154,7 +154,7 @@ class CTDBWrap(object):
         super().__init__()
 
     def health(self):
-        db_status = self.status()
+        db_status = self.hdl.status()
         return db_status['health']
 
     def validate_handle(self):
