@@ -111,6 +111,7 @@ def override_nameservers(_nameserver1='', _nameserver2='', _nameserver3=''):
         })
         assert results.status_code == 200, results.text
         """
+        pass
 
 
 @contextlib.contextmanager
@@ -147,3 +148,4 @@ def ldap(basedn, binddn, bindpw, hostname, **kwargs):
         }
     finally:
         #clear_ldap_info()
+        pass
