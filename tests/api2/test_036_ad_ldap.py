@@ -53,7 +53,7 @@ test_flags = {
 
 @pytest.fixture(scope="module")
 def kerberos_config(request):
-    results = PUT("/nfs/", {"v4_krb": True})
+    results = PUT("/nfs/", {"v4": True, "v4_krb": True})
     assert results.status_code == 200, results.text
     try:
         yield (request, results.json())
