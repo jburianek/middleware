@@ -53,6 +53,11 @@ test_flags = {
 
 @pytest.fixture(scope="module")
 def kerberos_config(request):
+    # DNS in automation domain is often broken.
+    # Setting rdns helps to pass this
+    results = PUT("/kerberos/", {"libdefaults_aux": "rdns = false"})
+    assert results.status_code == 200, results.text
+
     results = PUT("/nfs/", {"v4": True, "v4_krb": True})
     assert results.status_code == 200, results.text
     try:
@@ -65,6 +70,7 @@ def kerberos_config(request):
         results = PUT("/nfs/", {"v4_krb": False})
         assert results.status_code == 200, results.text
         """
+        pass
 
 
 @pytest.fixture(scope="module")
