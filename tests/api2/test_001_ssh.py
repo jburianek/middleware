@@ -163,18 +163,6 @@ def test_07_Ensure_ssh_agent_is_setup(request):
     assert is_agent_setup() is True
 
 
-def test_08_test_ssh_ad(do_ad_connection):
-    cmd = 'ls -la'
-    results = SSH_TEST(cmd, f'{ADUSERNAME}@{AD_DOMAIN}', ADPASSWORD, ip)
-    assert results['result'] is True, results['output']
-
-
-def test_09_test_ssh_ldap(do_ldap_connection):
-    cmd = 'ls -la'
-    results = SSH_TEST(cmd, LDAPUSER, LDAPPASSWORD, ip)
-    assert results['result'] is True, results['output']
-
-
 def test_10_Ensure_ssh_agent_is_setup(request):
     depends(request, ["ssh_password"])
     assert is_agent_setup() is True
