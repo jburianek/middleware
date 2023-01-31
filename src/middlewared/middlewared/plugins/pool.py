@@ -3131,7 +3131,7 @@ class PoolDatasetService(CRUDService):
         Inheritable(Str('casesensitivity', enum=['SENSITIVE', 'INSENSITIVE']), has_default=False),
         Inheritable(Str('aclmode', enum=['PASSTHROUGH', 'RESTRICTED', 'DISCARD']), has_default=False),
         Inheritable(Str('acltype', enum=['OFF', 'NFSV4', 'POSIX']), has_default=False),
-        Str('share_type', default='GENERIC', enum=['GENERIC', 'SMB']),
+        Str('share_type', default='GENERIC', enum=['GENERIC', 'SMB', 'APPS']),
         Inheritable(Str('xattr', default='SA', enum=['ON', 'SA'])),
         Ref('encryption_options'),
         Bool('encryption', default=False),
@@ -3241,6 +3241,12 @@ class PoolDatasetService(CRUDService):
             data['casesensitivity'] = 'INSENSITIVE'
             data['acltype'] = 'NFSV4'
             data['aclmode'] = 'RESTRICTED'
+
+        elif data['share_type'] == 'APPS':
+            data['casesensitivity'] = 'SENSITIVE'
+            data['atime'] = 'OFF'
+            data['acltype'] = 'NFSV4'
+            data['aclmode'] = 'PASSTHROUGH'
 
         if data['type'] == 'FILESYSTEM' and data.get('acltype', 'INHERIT') != 'INHERIT':
             data['aclinherit'] = 'PASSTHROUGH' if data['acltype'] == 'NFSV4' else 'DISCARD'
@@ -3366,6 +3372,24 @@ class PoolDatasetService(CRUDService):
             acl_job = await self.middleware.call(
                 'pool.dataset.permission', data['id'], {'options': {'set_default_acl': True}}
             )
+            await acl_job.wait()
+
+        elif data['type'] == 'FILESYSTEM' and data['share_type'] == 'APPS':
+            acl = (await self.middleware.call('filesystem.acltemplate.by_path', {
+                'query-filters': [('name', '=', 'NFS4_RESTRICTED')],
+                'format-options': {'canonicalize': True, 'ensure_builtins': True},
+            }))[0]['acl']
+            acl.append({
+                'tag': 'USER',
+                'id': 568,
+                'perms': {'BASIC': 'FULL_CONTROL'},
+                'flags': {'BASIC': 'INHERIT'},
+                'type': 'ALLOW'
+            })
+            acl_job = await self.middleware.call('filesystem.setacl', {
+                'path': mountpoint,
+                'dacl': acl,
+            })
             await acl_job.wait()
 
         return created_ds
