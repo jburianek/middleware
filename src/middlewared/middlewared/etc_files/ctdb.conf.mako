@@ -22,16 +22,13 @@
     }
 
 
-    # Try to extend our volfile server list
-    # based on available brick configuration
-    try:
-        bricks = middleware.call_sync(
-            'gluster.volume.query',
-            [['name', '=', 'ctdb_shared_vol']],
-            {'get': True}
-        )['bricks']
-    except Exception:
-        bricks = []
+    # Try to extend our volfile server list based on available brick configuration
+    bricks = []
+    if (crvl := middleware.call_sync('ctdb.root_dir.get_ctdb_root_volume_location')):
+        try:
+            bricks = middleware.call_sync('gluster.volume.query', [['name', '=', crvl]] {'get': True})['bricks']
+        except Exception:
+            bricks = []
 
     for brick in bricks:
         proto = 'rdma' if brick['ports']['rdma'] != 'N/A' else 'tcp'
