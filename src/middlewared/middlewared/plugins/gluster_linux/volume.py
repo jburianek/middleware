@@ -69,7 +69,6 @@ class GlusterVolumeService(CRUDService):
     async def common_validation(self, data, schema_name):
         verrors = ValidationErrors()
         create_request = schema_name == 'glustervolume_create'
-
         if data['name'] == CTDB_VOL_NAME and create_request:
             verrors.add(
                 f'{schema_name}.{data["name"]}',
@@ -126,33 +125,24 @@ class GlusterVolumeService(CRUDService):
         `redundancy` Integer representing number of redundancy bricks
         `force` Boolean, if True ignore potential warnings
         """
+        await self.middleware.call('gluster.volume.common_validation', data, 'glustervolume_create')
 
-        schema_name = 'glustervolume_create'
-        await self.middleware.call('gluster.volume.common_validation', data, schema_name)
-
-        # make sure this is started since it's responsible for sending
-        # events for which we act upon (i.e. FUSE mounting)
+        # this is responsible for sending events for which we act upon (i.e. FUSE mounting)
         await self.middleware.call('service.start', 'glustereventsd')
 
-        # before we create the gluster volume, we need to ensure
-        # the ctdb shared volume is setup
+        # before we create the gluster volume, we need to ensure the ctdb shared volume is setup
         ctdb_job = await self.middleware.call('ctdb.shared.volume.create')
         await ctdb_job.wait(raise_error=True)
 
         name = data.pop('name')
         bricks = await format_bricks(data.pop('bricks'))
         options = {'args': (name, bricks,), 'kwargs': data}
-
         await self.middleware.call('gluster.method.run', volume.create, options)
         await self.middleware.call('gluster.volume.start', {'name': name})
         await self.middleware.call('gluster.volume.store_workdir')
         return await self.middleware.call('gluster.volume.query', [('id', '=', name)])
 
-    @accepts(Dict(
-        'volume_start',
-        Str('name', required=True),
-        Bool('force', default=True)
-    ))
+    @accepts(Dict('volume_start', Str('name', required=True), Bool('force', default=True)))
     @returns()
     async def start(self, data):
         """
@@ -165,18 +155,13 @@ class GlusterVolumeService(CRUDService):
         options = {'args': (name,), 'kwargs': data}
         result = await self.middleware.call('gluster.method.run', volume.start, options)
 
-        # this will send a request to all peers
-        # in the TSP to FUSE mount this volume locally
+        # this will send a request to all peers in the TSP to FUSE mount this volume locally
         data = {'event': 'VOLUME_START', 'name': name, 'forward': True}
         await self.middleware.call('gluster.localevents.send', data)
 
         return result
 
-    @accepts(Dict(
-        'volume_restart',
-        Str('name', required=True),
-        Bool('force', default=True)
-    ))
+    @accepts(Dict('volume_restart', Str('name', required=True), Bool('force', default=True)))
     @returns()
     async def restart(self, data):
         """
@@ -185,15 +170,10 @@ class GlusterVolumeService(CRUDService):
         `name` String representing name of gluster volume
         `force` Boolean, if True forcefully restart the gluster volume
         """
-
         options = {'args': (data.pop('name'),), 'kwargs': data}
         return await self.middleware.call('gluster.method.run', volume.restart, options)
 
-    @accepts(Dict(
-        'volume_stop',
-        Str('name', required=True),
-        Bool('force', default=False)
-    ))
+    @accepts(Dict('volume_stop', Str('name', required=True), Bool('force', default=False)))
     @returns()
     async def stop(self, data):
         """
@@ -218,7 +198,6 @@ class GlusterVolumeService(CRUDService):
         `id` String representing name of gluster volume
                 to be deleted
         """
-
         args = {'args': ((await self.get_instance(id))['name'],)}
 
         if id == CTDB_VOL_NAME:
@@ -264,11 +243,7 @@ class GlusterVolumeService(CRUDService):
         options = {'kwargs': {'volname': data['name']}}
         return await self.middleware.call('gluster.method.run', volume.info, options)
 
-    @accepts(Dict(
-        'volume_status',
-        Str('name', required=True),
-        Bool('verbose', default=True),
-    ))
+    @accepts(Dict('volume_status', Str('name', required=True), Bool('verbose', default=True)))
     @returns(List('volumes', items=[Ref('gluster_volume_entry')]))
     async def status(self, data):
         """
@@ -288,12 +263,7 @@ class GlusterVolumeService(CRUDService):
         """
         return await self.middleware.call('gluster.method.run', volume.vollist, {})
 
-    @accepts(Dict(
-        'volume_optreset',
-        Str('name', required=True),
-        Str('opt'),
-        Bool('force'),
-    ))
+    @accepts(Dict('volume_optreset', Str('name', required=True), Str('opt'), Bool('force')))
     async def optreset(self, data):
         """
         Reset volumes options.
@@ -304,15 +274,10 @@ class GlusterVolumeService(CRUDService):
         `opt` String representing name of the option to reset
         `force` Boolean, if True forcefully reset option(s)
         """
-
         options = {'args': (data.pop('name'),), 'kwargs': data}
         return await self.middleware.call('gluster.method.run', volume.optreset, options)
 
-    @accepts(Dict(
-        'volume_optset',
-        Str('name', required=True),
-        Dict('opts', required=True, additional_attrs=True),
-    ))
+    @accepts(Dict('volume_optset', Str('name', required=True), Dict('opts', required=True, additional_attrs=True)))
     @returns()
     async def optset(self, data):
         """
@@ -323,15 +288,10 @@ class GlusterVolumeService(CRUDService):
             --key-- is the name of the option
             --value-- is the value to be given to the option
         """
-
         options = {'args': (data['name'],), 'kwargs': data['opts']}
         return await self.middleware.call('gluster.method.run', volume.optset, options)
 
-    @accepts(Dict(
-        'volume_quota',
-        Str('name', required=True),
-        Bool('enable', required=True),
-    ))
+    @accepts(Dict('volume_quota', Str('name', required=True), Bool('enable', required=True)))
     @returns()
     async def quota(self, data):
         """
@@ -340,7 +300,6 @@ class GlusterVolumeService(CRUDService):
         `name` String representing name of gluster volume
         `enable` Boolean, if True enable quota else disable it
         """
-
         method = quota.enable if data['enable'] else quota.disable
         options = {'args': (data['name'],)}
         return await self.middleware.call('gluster.method.run', method, options)
