@@ -36,6 +36,12 @@ class GlusterConfig(enum.Enum):
     # is stored here.
     SECRETS_FILE = os.path.join(WORKDIR, 'events/secret')
 
+    # when the first gluster volume is created, we will create
+    # a ctdb root directory which is where ctdb still store
+    # various bits of configuration. The gluster volume name
+    # is store here.
+    CTDB_ROOT_DIR_VOLUME_LOCATION = os.path.join(WORKDIR, 'ctdb_root_dir_volume_location.txt')
+
     # there are apprehensions for having an unbounded maximum
     # number of peers in a cluster wrt to ctdb/smb. Since ctdb
     # nodes are mapped to gluster peers, we cap the max number
