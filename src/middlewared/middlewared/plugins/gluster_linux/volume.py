@@ -69,11 +69,18 @@ class GlusterVolumeService(CRUDService):
     async def common_validation(self, data, schema_name):
         verrors = ValidationErrors()
         create_request = schema_name == 'glustervolume_create'
-        if data['name'] == CTDB_VOL_NAME and create_request:
-            verrors.add(
-                f'{schema_name}.{data["name"]}',
-                f'"{data["name"]}" is a reserved name. Choose a different volume name.'
-            )
+        if create_request:
+            if data['name'] == CTDB_VOL_NAME:
+                verrors.add(
+                    f'{schema_name}.{data["name"]}',
+                    f'"{data["name"]}" is a reserved name. Choose a different volume name.'
+                )
+            else:
+                current_vols = await self.middleware.call('gluster.volume.query')
+                if current_vols and any((i['id'] == CTDB_VOL_NAME for i in current_vols)):
+                    err = 'Legacy cluster volume configuration detected.'
+                    err += ' All gluster volumes must be destroyed before creating a new volume.'
+                    verrors.add(f'{schema_name}.{data["name"]}', err)
 
         verrors.check()
 
