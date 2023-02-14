@@ -3,9 +3,11 @@ import os
 
 import pyglfs
 from middlewared.service import Service, CallError, job
+from middlewared.plugins.gluster_linux.utils import GTDBConfig
 
 LOCK = 'ctdb-init-lock'
 ROOT_DIR_NAME = 'ctdb-root-dir'
+CTDB_ROOT_DIR_VOLUME_LOCATION = GTDBConfig.CTDB_ROOT_DIR_VOLUME_LOCATION.value
 
 
 class CtdbRootDirService(Service):
@@ -55,3 +57,22 @@ class CtdbRootDirService(Service):
         gid = 0 if stat.st_gid != 0 else -1
         if uid == 0 or gid == 0:
             dir_fd.fchown(uid, gid)
+
+        with open(CTDB_ROOT_DIR_VOLUME_LOCATION, 'w') as f:
+            f.write(gvol_name)
+
+    def set_ctdb_root_dir_volume_location(self, gvol_name):
+        init_job = self.middleware.call('ctdb.root_dir.init', gvol_name)
+        init_job.wait_sync(raise_error=True)
+
+    def get_ctdb_root_dir_volume_location(self):
+        for vol in self.middleware.call_sync('gluster.volume.list'):
+            try:
+                self.middleware.call_sync('gluster.filesystem.lookup', {'volume_name': vol, 'path': ROOT_DIR_NAME})
+            except Exception as e:
+                if e.errno == errno.ENOENT:
+                    continue
+                else:
+                    raise CallError('Unhandled exception: {e!r}')
+            else:
+                return vol
