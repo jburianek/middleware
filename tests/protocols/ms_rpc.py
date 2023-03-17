@@ -93,7 +93,6 @@ class MS_RPC():
             'rid'
         )
 
-
     # SRVSVC
     def shares(self):
         shares = []
