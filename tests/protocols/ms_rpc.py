@@ -28,6 +28,14 @@ class MS_RPC():
     def disconnect(self):
         return
 
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, tp, value, traceback):
+        self.disconnect()
+        raise
+
     def _get_connection_subprocess_args(self):
         # NOTE: on failure rpcclient will return 1 with error written to stdout
         args = ['rpcclient']
