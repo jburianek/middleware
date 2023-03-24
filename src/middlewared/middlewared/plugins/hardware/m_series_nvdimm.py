@@ -13,7 +13,6 @@ class MseriesNvdimmService(Service):
         namespace = 'mseries.nvdimm'
 
     def run_ixnvdimm(self, nvmem_dev):
-        # TODO: MODULE_HEALTH
         base = f'ixnvdimm -r {nvmem_dev}'
         cmds = [
             f'{base} SLOT0_FWREV',
@@ -22,6 +21,7 @@ class MseriesNvdimmService(Service):
             f'{base} NVM_LIFETIME',
             f'{base} ES_LIFETIME',
             f'{base} SPECREV',
+            f'{base} MODULE_HEALTH',
         ]
         return subprocess.run(
             ';'.join(cmds),
@@ -32,10 +32,24 @@ class MseriesNvdimmService(Service):
         ).stdout.strip().split('\n')
 
     def parse_ixnvdimm_output(self, data):
+        crit_hlth_mapping = (
+            (0x01, 'PERSISTENCY_LOST_ERROR'),
+            (0x02, 'WARNING_THRESHOLD_EXCEEDED'),
+            (0x04, 'PERSISTENCY_RESTORED'),
+            (0x08, 'BELOW_WARNING_THRESHOLD'),
+            (0x10, 'PERMANENT_HARDWARE_FAILURE'),
+            (0x20, 'EVENT_N_LOW'),
+        )
+        crit_hlth_hex = f'0x{data[6]}'
+        crit_hlth_info = {crit_hlth_hex: []}
+        for _, msg in filter(lambda x: x[0] & int(crit_hlth_hex, 16), crit_hlth_mapping):
+            crit_hlth_info[crit_hlth_hex].append(msg)
+
         return {
+            'critical_health_info': crit_hlth_info,
             'running_firmware': '.'.join(data[0][:2] if data[2][-1] == '0' else data[1][:2]),
-            'nvm_lifetime_percent': int(f'0x{data[3]}, 16'),
-            'es_lifetime_percent': int(f'0x{data[4]}, 16'),
+            'nvm_lifetime_percent': int(f'0x{data[3]}', 16),
+            'es_lifetime_percent': int(f'0x{data[4]}', 16),
             'specrev': data[5],
         }
 
