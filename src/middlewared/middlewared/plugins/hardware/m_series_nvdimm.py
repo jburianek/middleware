@@ -24,6 +24,7 @@ class MseriesNvdimmService(Service):
             f'{base} MODULE_HEALTH',
             f'{base} ES_TEMP',
             f'{base} ARM_STATUS',
+            f'{base} MODULE_HEALTH_STATUS',
         ]
         return subprocess.run(
             ';'.join(cmds),
@@ -77,9 +78,36 @@ class MseriesNvdimmService(Service):
 
         return es_temp
 
+    def module_health_status(self, value):
+        mod_mapping = (
+            (0x0001, 'VOLTAGE_REGULATOR_FAILED'),
+            (0x0002, 'VDD_LOST'),
+            (0x0004, 'VPP_LOST'),
+            (0x0008, 'VTT_LOST'),
+            (0x0010, 'DRAM_NOT_SELF_REFRESH'),
+            (0x0020, 'CONTROLLER_HARDWARE_ERROR'),
+            (0x0040, 'NVM_CONTROLLER_ERROR'),
+            (0x0080, 'NVM_LIFETIME_ERROR'),
+            (0x0100, 'NOT_ENOUGH_ENERGRY_FOR_CSAVE'),
+            (0x0200, 'INVALID_FIRMWARE_ERROR'),
+            (0x0400, 'CONFIG_DATA_ERROR'),
+            (0x0800, 'NO_ES_PRESENT'),
+            (0x1000, 'ES_POLICY_NOT_SET'),
+            (0x2000, 'ES_HARDWARE_FAILURE'),
+            (0x4000, 'ES_HEALTH_ASSESSMENT_ERROR'),
+        )
+        mod_hex = f'0x{value}'
+        mod_int = int(mod_hex, 16)
+        mod_info = {mod_hex: []}
+        for _, msg in filter(lambda x: x[0] & mod_int, mod_mapping):
+            mod_info[mod_hex].append(msg)
+
+        return mod_info
+
     def parse_ixnvdimm_output(self, data):
         return {
-            'critical_health_info': self.critical_health_status(data[6],
+            'critical_health_info': self.critical_health_status(data[6]),
+            'module_health_info': self.module_health_status(data[9]),
             'running_firmware': '.'.join(data[0][:2] if data[2][-1] == '0' else data[1][:2]),
             'nvm_lifetime_percent': int(f'0x{data[3]}', 16),
             'es_lifetime_percent': int(f'0x{data[4]}', 16),
