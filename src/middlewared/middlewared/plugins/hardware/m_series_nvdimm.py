@@ -23,6 +23,7 @@ class MseriesNvdimmService(Service):
             f'{base} SPECREV',
             f'{base} MODULE_HEALTH',
             f'{base} ES_TEMP',
+            f'{base} ARM_STATUS',
         ]
         return subprocess.run(
             ';'.join(cmds),
@@ -53,12 +54,26 @@ class MseriesNvdimmService(Service):
         elif es_temp >= 128:
             es_temp = (es_temp & 0x0fff) // 16
 
+        arm_mapping = (
+            (0x01, 'SUCCESS'),
+            (0x02, 'ERROR'),
+            (0x04, 'SAVE_N_ARMED'),
+            (0x08, 'RESET_N_ARMED'),
+            (0x10, 'ABORT_SUCCESS'),
+            (0x20, 'ABORT_ERROR'),
+        )
+        arm_status_hex = f'0x{data[8]}'
+        arm_status_info = {arm_status_hex: []}
+        for _, msg in filter(lambda x: x[0] & int(arm_status_hex, 16), arm_mapping):
+            arm_status_info[arm_status_hex].append(msg)
+
         return {
             'critical_health_info': crit_hlth_info,
             'running_firmware': '.'.join(data[0][:2] if data[2][-1] == '0' else data[1][:2]),
             'nvm_lifetime_percent': int(f'0x{data[3]}', 16),
             'es_lifetime_percent': int(f'0x{data[4]}', 16),
             'es_current_temperature': es_temp,
+            'arm_status': arm_status_info,
             'specrev': int(data[5]),
         }
 
