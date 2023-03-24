@@ -33,7 +33,7 @@ class MseriesNvdimmService(Service):
             errors="ignore",
         ).stdout.strip().split('\n')
 
-    def parse_ixnvdimm_output(self, data):
+    def critical_health_status(self, value):
         crit_hlth_mapping = (
             (0x01, 'PERSISTENCY_LOST_ERROR'),
             (0x02, 'WARNING_THRESHOLD_EXCEEDED'),
@@ -42,18 +42,15 @@ class MseriesNvdimmService(Service):
             (0x10, 'PERMANENT_HARDWARE_FAILURE'),
             (0x20, 'EVENT_N_LOW'),
         )
-        crit_hlth_hex = f'0x{data[6]}'
+        crit_hlth_hex = f'0x{value}'
+        crit_hlth_int = int(crit_hlth_hex, 16)
         crit_hlth_info = {crit_hlth_hex: []}
-        for _, msg in filter(lambda x: x[0] & int(crit_hlth_hex, 16), crit_hlth_mapping):
+        for _, msg in filter(lambda x: x[0] & crit_hlth_int, crit_hlth_mapping):
             crit_hlth_info[crit_hlth_hex].append(msg)
 
-        # Workaround wrong units reported by Micron NVDIMMs
-        es_temp = int(f'0x{data[7]}', 16)
-        if es_temp & 0x1000 != 0:
-            es_temp = -(es_temp & 0x0fff) // 16
-        elif es_temp >= 128:
-            es_temp = (es_temp & 0x0fff) // 16
+        return crit_hlth_info
 
+    def arm_info(self, value):
         arm_mapping = (
             (0x01, 'SUCCESS'),
             (0x02, 'ERROR'),
@@ -62,18 +59,32 @@ class MseriesNvdimmService(Service):
             (0x10, 'ABORT_SUCCESS'),
             (0x20, 'ABORT_ERROR'),
         )
-        arm_status_hex = f'0x{data[8]}'
+        arm_status_hex = f'0x{value}'
+        arm_status_int = int(arm_status_hex, 16)
         arm_status_info = {arm_status_hex: []}
-        for _, msg in filter(lambda x: x[0] & int(arm_status_hex, 16), arm_mapping):
+        for _, msg in filter(lambda x: x[0] & arm_status_int, arm_mapping):
             arm_status_info[arm_status_hex].append(msg)
 
+        return arm_status_info
+
+    def es_temp(self, value):
+        # Workaround wrong units reported by Micron NVDIMMs
+        es_temp = int(f'0x{value}', 16)
+        if es_temp & 0x1000 != 0:
+            es_temp = -(es_temp & 0x0fff) // 16
+        elif es_temp >= 128:
+            es_temp = (es_temp & 0x0fff) // 16
+
+        return es_temp
+
+    def parse_ixnvdimm_output(self, data):
         return {
-            'critical_health_info': crit_hlth_info,
+            'critical_health_info': self.critical_health_status(data[6],
             'running_firmware': '.'.join(data[0][:2] if data[2][-1] == '0' else data[1][:2]),
             'nvm_lifetime_percent': int(f'0x{data[3]}', 16),
             'es_lifetime_percent': int(f'0x{data[4]}', 16),
-            'es_current_temperature': es_temp,
-            'arm_status': arm_status_info,
+            'es_current_temperature': self.es_temp(data[7]),
+            'arm_status': self.arm_info(data[8]),
             'specrev': int(data[5]),
         }
 
