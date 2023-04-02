@@ -2,7 +2,7 @@ from pathlib import Path
 
 from middlewared.schema import Dict, IPAddr, Int, Bool
 from middlewared.service import (accepts, job, filterable,
-                                 CRUDService, ValidationErrors)
+                                 CRUDService, private, ValidationErrors)
 from middlewared.utils import filter_list
 from middlewared.plugins.cluster_linux.utils import CTDBConfig
 
@@ -15,6 +15,38 @@ class CtdbPrivateIpService(CRUDService):
     class Config:
         namespace = 'ctdb.private.ips'
         cli_namespace = 'service.ctdb.private.ips'
+
+    glfs_info = None
+
+    @private
+    def contents(self, recursion_cnt=0):
+        if not self.glfs_info:
+            try:
+                info = self.middleware.call_sync('ctdb.shared.volume.info')
+                nodes_uuid = self.middleware.call_sync('gluster.filesystem.lookup', {
+                    'volume_name': info['volume_name'],
+                    'parent_uuid': info['uuid'],
+                    'path': CTDBConfig.PRIVATE_IP_FILE.value
+                })['uuid']
+            except Exception:
+                self.logger.debug('Failed to look up ctdb nodes file. Info: %s', info, exc_info=True)
+                return []
+            else:
+                self.glfs_info = {'volume_name': info['volume_name'], 'uuid': nodes_uuid}
+
+        try:
+            contents = self.middleware.call_sync('gluster.filesystem.contents', {
+                'volume_name': self.glfs_info['volume_name'], 'uuid': self.glfs_info['uuid']
+            })
+        except Exception:
+            self.logger.warning('Failed to read nodes file via uuid: %s', self.glfs_info, exc_info=True)
+            if not recursion_cnt:
+                self.glfs_info = None
+                return self.contents(recursion_cnt + 1)
+        else:
+            return contents.splitlines()
+
+        return []
 
     @filterable
     def query(self, filters, options):
@@ -36,27 +68,13 @@ class CtdbPrivateIpService(CRUDService):
             ips = self.middleware.call_sync('ctdb.general.listnodes')
             ips = list(map(lambda i: dict(i, id=i['pnn']), ips))
         else:
-            try:
-                shared_vol = Path(CTDBConfig.CTDB_LOCAL_MOUNT.value)
-                mounted = shared_vol.is_mount()
-            except Exception:
-                # can happen when mounted but glusterd service
-                # is stopped/crashed etc
-                mounted = False
-
-            if mounted:
-                pri_ip_file = Path(CTDBConfig.GM_PRI_IP_FILE.value)
-                etc_ip_file = Path(CTDBConfig.ETC_PRI_IP_FILE.value)
-                if pri_ip_file.exists():
-                    if etc_ip_file.is_symlink() and etc_ip_file.resolve() == pri_ip_file:
-                        with open(pri_ip_file) as f:
-                            for idx, i in enumerate(f.read().splitlines()):
-                                ips.append({
-                                    'id': idx,
-                                    'pnn': idx,
-                                    'address': i.split('#')[1] if i.startswith('#') else i,
-                                    'enabled': not i.startswith('#')
-                                })
+            for idx, i in enumerate(self.contents()):
+                ips.append({
+                    'id': idx,
+                    'pnn': idx,
+                    'address': i.split('#')[1] if i.startswith('#') else i,
+                    'enabled': not i.startswith('#')
+                })
 
         return filter_list(ips, filters, options)
 
@@ -75,8 +93,9 @@ class CtdbPrivateIpService(CRUDService):
         schema_name = 'private_create'
         verrors = ValidationErrors()
 
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
-        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
 
         return await self.middleware.call('ctdb.private.ips.query', [('address', '=', data['ip'])])
 
@@ -102,7 +121,8 @@ class CtdbPrivateIpService(CRUDService):
         data = await self.get_instance(id)
         data['enable'] = option['enable']
 
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
-        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
 
         return await self.get_instance(id)

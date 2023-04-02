@@ -7,6 +7,7 @@ import stat
 
 from middlewared.service import Service, CallError
 from middlewared.plugins.cluster_linux.utils import CTDBConfig
+from middlewared.plugins.gluster_linux.pyglfs_utils import glusterfs_volume
 
 
 class CtdbIpService(Service):
@@ -87,52 +88,50 @@ class CtdbIpService(Service):
         verrors.check()
 
     @contextlib.contextmanager
-    def lockfile_open(self, path):
+    def lockfile_open(self, file_hdl):
         # Open the file under a lock. This forces serialization
         # of write access to the file from all nodes.
-        def ip_file_opener(path, flags):
-            fd = os.open(path, flags, 0o755)
-            st = os.fstat(fd)
-
+        st = file_hdl.cached_stat
+        fd = file_hdl.open(os.O_RDWR)
+        try:
+            fd.posix_lock(fcntl.F_SETLK, fcntl.F_WRLCK)
             if stat.S_IMODE(st.st_mode) != 0o755:
-                os.fchmod(fd, 0o755)
+                fd.fchmod(0o755)
 
             if st.st_uid != 0 or st.st_gid != 0:
-                os.fchown(fd, 0, 0)
+                fd.fchown(0, 0)
 
-            return fd
+            yield fd
+        finally:
+            fd.posix_lock(fcntl.F_SETLK, fcntl.F_UNLCK)
 
-        with open(path, "r+", opener=ip_file_opener) as f:
-            try:
-                fcntl.lockf(f.fileno(), fcntl.LOCK_EX)
-                yield f
-            finally:
-                os.fsync(f.fileno())
-                fcntl.lockf(f.fileno(), fcntl.LOCK_UN)
 
-    def entry_check(self, ip_file, entry):
+    def entry_check(self, ip_file, entry, file_size):
         # Scan file for duplicate entry. Ideally this sort
         # of issue would have been caught during initial validation
         # but since initial validation isn't performed under a lock,
         # we are potentially exposed to time of user / time of check issues.
-        for line in ip_file:
+        contents = ip_file.pread(0, file_size)
+        for line in contents.decode().splitlines():
             if line == entry:
                 raise CallError(f'{entry}: entry already exists in file.', errno.EEXIST)
-
-        os.lseek(ip_file.fileno(), 0, os.SEEK_END)
 
     def create_locked(self, ctdb_file, data, is_private):
         # in the case of adding a node (private or public),
         # it _MUST_ be added to the end of the file always
         with self.lockfile_open(ctdb_file) as f:
+            st = f.fstat()
             entry = data['ip'] if is_private else f'{data["ip"]}/{data["netmask"]} {data["interface"]}'
-            self.entry_check(f, entry)
-            f.write(entry + '\n')
+            if st.st_size > 0:
+                self.entry_check(f, entry, st.st_size)
+            f.pwrite((entry + '\n').encode(), st.st_size)
 
     def update_locked(self, schema_name, ctdb_file, data, is_private):
         enable = data.get('enable', False)
 
         with self.lockfile_open(ctdb_file) as f:
+            st = f.fstat()
+            linex = []
             if is_private:
                 address = data['address']
             else:
@@ -141,7 +140,8 @@ class CtdbIpService(Service):
             find_entry = address if not enable else '#' + address
 
             # read the data first
-            lines = f.read().splitlines()
+            if st.st_size > 0:
+                linex = f.pread(0, st.st_size).decode().splitlines()
 
             # before we truncate the file, let's make sure we don't hit an
             # unexpected error
@@ -170,26 +170,30 @@ class CtdbIpService(Service):
             except ValueError as e:
                 raise CallError(f'Failed finding entry in file with error: {e}')
 
+            contents = '\n'.join(lines) + '\n'
+
             # now truncate the file since we're rewriting it
-            f.seek(0)
-            f.truncate()
+            f.ftruncate(0)
+            f.pwrite(contents.encode(), 0)
 
-            # finally write it
-            f.write('\n'.join(lines) + '\n')
-
-    def update_file(self, data, schema_name):
+    @glusterfs_volume
+    def update_file(self, vol, data, schema_name):
         """
         Update the ctdb cluster private or public IP file.
         """
 
         is_private = schema_name in ('private_create', 'private_update')
         create = schema_name in ('private_create', 'public_create')
+        root_hdl = vol.open_by_uuid(data['uuid'])
+        file_hdl = None
 
         if is_private:
             ctdb_file = pathlib.Path(CTDBConfig.GM_PRI_IP_FILE.value)
+            glfs_file = CTDBConfig.PRIVATE_IP_FILE.value
             etc_file = pathlib.Path(CTDBConfig.ETC_PRI_IP_FILE.value)
         else:
             ctdb_file = pathlib.Path(f'{CTDBConfig.GM_PUB_IP_FILE.value}_{data["pnn"]}')
+            glfs_file = f'{CTDBConfig.PUBLIC_IP_FILE.value}_{data["pnn"]}'
             etc_file = pathlib.Path(CTDBConfig.ETC_PUB_IP_FILE.value)
 
         if is_private:
@@ -212,16 +216,22 @@ class CtdbIpService(Service):
             #       exist then assume this is the first peer being
             #       added to the cluster and skip the cluster health
             #       check.
-            if ctdb_file.exists() and self.middleware.call_sync('service.started', 'ctdb'):
-                if not self.middleware.call_sync('ctdb.general.healthy'):
-                    raise CallError('ctdb cluster is not healthy, not updating private ip file')
+            try:
+                file_hdl = root_hdl.lookup(glfs_file)
+            except Exception:
+                pass
+            else:
+                if self.middleware.call_sync('service.started', 'ctdb'):
+                    if not self.middleware.call_sync('ctdb.general.healthy'):
+                        raise CallError('ctdb cluster is not healthy, not updating private ip file')
 
         # create the ctdb shared volume file
         # ignoring if it's already there
-        try:
-            ctdb_file.touch(exist_ok=True)
-        except Exception as e:
-            raise CallError(f'Failed creating {ctdb_file} with error: {e}')
+        if not file_hdl:
+            try:
+                file_hdl = root_hdl.create(glfs_file, flags=os.O_RDWR|os.O_CREAT)
+            except Exception as e:
+                raise CallError(f'Failed creating {ctdb_file} with error: {e}')
 
         # we need to make sure the local etc file is symlinked
         # to the ctdb shared volume so all nodes in the cluster
@@ -253,6 +263,6 @@ class CtdbIpService(Service):
                 raise CallError(f'Failed symlinking {etc_file} to {ctdb_file} with error: {e}')
 
         if create:
-            self.create_locked(ctdb_file, data, is_private)
+            self.create_locked(file_hdl, data, is_private)
         else:
-            self.update_locked(schema_name, ctdb_file, data, is_private)
+            self.update_locked(schema_name, file_hdl, data, is_private)

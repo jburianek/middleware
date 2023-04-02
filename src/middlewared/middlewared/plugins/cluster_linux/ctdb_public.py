@@ -20,6 +20,34 @@ class CtdbPublicIpService(CRUDService):
         namespace = 'ctdb.public.ips'
         cli_namespace = 'service.ctdb.public.ips'
 
+    @private
+    def contents(self, pnn, glfs_info=None, recursion_cnt=0):
+        if not glfs_info:
+            try:
+                info = self.middleware.call_sync('ctdb.shared.volume.info')
+                glfs_uuid = self.middleware.call_sync('gluster.filesystem.lookup', {
+                    'volume_name': info['volume_name'],
+                    'parent_uuid': info['uuid'],
+                    'path': f'public_addresses_{pnn}'
+                })['uuid']
+                glfs_info = {'volume_name': info['volume_name'], 'uuid': glfs_uuid}
+            except Exception:
+                self.logger.debug('Failed to look up public IP file for node: %d', pnn, exc_info=True)
+                return []
+
+        try:
+            contents = self.middleware.call_sync('gluster.filesystem.contents', {
+                'volume_name': glfs_info['volume_name'], 'uuid': glfs_info['uuid']
+            })
+        except Exception:
+            self.logger.warning('Failed to read nodes file via uuid: %s', self.nodes_uuid, exc_info=True)
+            if not recursion_cnt:
+                return self.contents(pnn, glfs_info, recursion_cnt + 1)
+        else:
+            return contents.splitlines()
+
+        return []
+
     @accepts(List('exclude_ifaces', items=[Str('exclude_iface')], default=[]))
     @returns(List(items=[Str('interface')]))
     async def interface_choices(self, exclude):
@@ -99,23 +127,21 @@ class CtdbPublicIpService(CRUDService):
                 'active_ips': {}
             }
 
-            with contextlib.suppress(FileNotFoundError):
-                with open(f'{shared_vol}/public_addresses_{pnn}') as f:
-                    for i in f.read().splitlines():
-                        if not i.startswith('#'):
-                            enabled = True
-                            public_ip = i.split('/')[0]
-                        else:
-                            enabled = False
-                            public_ip = i.split('#')[1].split('/')[0]
+            for i in self.contents(pnn):
+                if not i.startswith('#'):
+                    enabled = True
+                    public_ip = i.split('/')[0]
+                else:
+                    enabled = False
+                    public_ip = i.split('#')[1].split('/')[0]
 
-                        nodes[pnn]['configured_ips'].update({
-                            public_ip: {
-                                'enabled': enabled,
-                                'public_ip': public_ip,
-                                'interface_name': i.split()[-1]
-                            }
-                        })
+                nodes[pnn]['configured_ips'].update({
+                    public_ip: {
+                        'enabled': enabled,
+                        'public_ip': public_ip,
+                        'interface_name': i.split()[-1]
+                    }
+                })
 
         for entry in ctdb_ips:
             if not nodes.get(entry['pnn']):
@@ -186,8 +212,9 @@ class CtdbPublicIpService(CRUDService):
         if 'pnn' not in data:
             data['pnn'] = await self.middleware.call('ctdb.general.pnn')
 
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
-        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
         await self.middleware.call('ctdb.public.ips.reload')
 
         return await self.middleware.call('ctdb.public.ips.query', [('id', '=', data['pnn'])])
@@ -225,9 +252,10 @@ class CtdbPublicIpService(CRUDService):
         data = (await self.get_instance(pnn))['configured_ips'][address]
         data['pnn'] = pnn
 
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
         if data['enabled']:
             await self.middleware.call('ctdb.public.ips.delete_ip', {'public_ip': address})
 
-        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
         await self.reallocate()

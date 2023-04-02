@@ -11,11 +11,17 @@
     for i in (p_dir, s_dir, v_dir):
         Path(i).mkdir(parents=True, exist_ok=True)
 
+    try:
+        ctdb_shared_vol_info = middleware.call_sync('ctdb.shared.volume.info')
+    except Exception:
+        middleware.logger.debug('Failed to retrieve ctdb volume information', exc_info=True)
+        raise FileShouldNotExist()
+
     mutex_helper_config = {
         'liveness_timeout': 20,
         'check_interval': 1,
         'reclock_path': r_file,
-        'volume_name': 'ctdb_shared_vol',
+        'volume_name': ctdb_shared_vol_info['volume_name'],
         'volfile_servers': [{'host': '127.0.0.1', 'proto': 'tcp', 'port': 0}],
         'log_file': '/var/log/ctdb/reclock_helper.log',
         'log_level': 1
