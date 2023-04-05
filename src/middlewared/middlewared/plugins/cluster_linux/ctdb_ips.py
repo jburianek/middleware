@@ -7,7 +7,7 @@ import stat
 
 from middlewared.service import Service, CallError
 from middlewared.plugins.cluster_linux.utils import CTDBConfig
-from middlewared.plugins.gluster_linux.pyglfs_utils import glusterfs_volume
+from middlewared.plugins.gluster_linux.pyglfs_utils import glusterfs_volume, lock_file_open
 
 
 class CtdbIpService(Service):
@@ -25,8 +25,9 @@ class CtdbIpService(Service):
                 'The "glusterd" service is not started.',
             )
 
+        shared_vol = pathlib.Path(data['volume_mountpoint'])
+
         try:
-            shared_vol = pathlib.Path(CTDBConfig.CTDB_LOCAL_MOUNT.value)
             mounted = shared_vol.is_mount()
         except Exception:
             mounted = False
@@ -87,25 +88,6 @@ class CtdbIpService(Service):
 
         verrors.check()
 
-    @contextlib.contextmanager
-    def lockfile_open(self, file_hdl):
-        # Open the file under a lock. This forces serialization
-        # of write access to the file from all nodes.
-        st = file_hdl.cached_stat
-        fd = file_hdl.open(os.O_RDWR)
-        try:
-            fd.posix_lock(fcntl.F_SETLK, fcntl.F_WRLCK)
-            if stat.S_IMODE(st.st_mode) != 0o755:
-                fd.fchmod(0o755)
-
-            if st.st_uid != 0 or st.st_gid != 0:
-                fd.fchown(0, 0)
-
-            yield fd
-        finally:
-            fd.posix_lock(fcntl.F_SETLK, fcntl.F_UNLCK)
-
-
     def entry_check(self, ip_file, entry, file_size):
         # Scan file for duplicate entry. Ideally this sort
         # of issue would have been caught during initial validation
@@ -119,7 +101,7 @@ class CtdbIpService(Service):
     def create_locked(self, ctdb_file, data, is_private):
         # in the case of adding a node (private or public),
         # it _MUST_ be added to the end of the file always
-        with self.lockfile_open(ctdb_file) as f:
+        with lock_file_open(ctdb_file, os.O_RDWR, mode=0o644, owners=(0, 0)) as f:
             st = f.fstat()
             entry = data['ip'] if is_private else f'{data["ip"]}/{data["netmask"]} {data["interface"]}'
             if st.st_size > 0:
@@ -129,7 +111,7 @@ class CtdbIpService(Service):
     def update_locked(self, schema_name, ctdb_file, data, is_private):
         enable = data.get('enable', False)
 
-        with self.lockfile_open(ctdb_file) as f:
+        with lock_file_open(ctdb_file, os.O_RDWR, mode=0o644, owners=(0, 0)) as f:
             st = f.fstat()
             lines = []
             if is_private:
@@ -188,13 +170,13 @@ class CtdbIpService(Service):
         file_hdl = None
 
         if is_private:
-            ctdb_file = pathlib.Path(CTDBConfig.GM_PRI_IP_FILE.value)
             glfs_file = CTDBConfig.PRIVATE_IP_FILE.value
             etc_file = pathlib.Path(CTDBConfig.ETC_PRI_IP_FILE.value)
         else:
-            ctdb_file = pathlib.Path(f'{CTDBConfig.GM_PUB_IP_FILE.value}_{data["pnn"]}')
             glfs_file = f'{CTDBConfig.PUBLIC_IP_FILE.value}_{data["pnn"]}'
             etc_file = pathlib.Path(CTDBConfig.ETC_PUB_IP_FILE.value)
+
+        ctdb_file = pathlib.Path(data['mountpoint'], glfs_file)
 
         if is_private:
             # ctdb documentation is _VERY_ explicit in

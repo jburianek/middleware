@@ -1,6 +1,8 @@
 import errno
+import fcntl
 import functools
 import pyglfs
+import stat
 import threading
 
 from contextlib import contextmanager
@@ -73,6 +75,21 @@ class GlfsHdl:
 
 glfs = GlfsHdl()
 
+@contextmanager
+def lock_file_open(object_hdl, open_flags, lock_flags=fcntl.F_WRLCK, mode=None, owners=None):
+    fd = object_hdl.open(open_flags)
+    try:
+        fd.posix_lock(fcntl.F_SETLK, fcntl.F_WRLCK)
+        if mode is not None:
+            fd.fchmod(mode)
+
+        if owners is not None:
+            fd.fchown(*owners)
+
+        yield fd
+
+    finally:
+        fd.posix_lock(fcntl.F_SETLK, fcntl.F_UNLCK)
 
 def glusterfs_volume(fn):
     @functools.wraps(fn)

@@ -93,9 +93,9 @@ class CtdbPrivateIpService(CRUDService):
         schema_name = 'private_create'
         verrors = ValidationErrors()
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
+        data |= await self.middleware.call('ctdb.shared.volume.config')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
-        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
 
         return await self.middleware.call('ctdb.private.ips.query', [('address', '=', data['ip'])])
 
@@ -121,8 +121,8 @@ class CtdbPrivateIpService(CRUDService):
         data = await self.get_instance(id)
         data['enable'] = option['enable']
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
+        data |= await self.middleware.call('ctdb.shared.volume.config')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
-        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
 
         return await self.get_instance(id)

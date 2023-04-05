@@ -24,6 +24,7 @@ class CtdbSharedVolumeService(Service):
 
     def generate_info(self):
         volume = CTDB_VOL_NAME
+        volume_mp = Path(CTDBConfig.LOCAL_MOUNT_BASE.value, volume)
         metadata_dir = '/'
         glfs_uuid = self.middleware.call_sync('gluster.filesystem.lookup', {
             'volume_name': CTDB_VOL_NAME,
@@ -31,8 +32,9 @@ class CtdbSharedVolumeService(Service):
         })['uuid']
         data = {
             'volume_name': volume,
+            'volume_mountpoint': str(volume_mp), 
             'path': metadata_dir,
-            'mountpoint': str(Path(f'/cluster/{volume}/{metadata_dir}')),
+            'mountpoint': str(Path(f'{volume_mp}/{metadata_dir}')),
             'uuid': glfs_uuid
         }
         with open(CTDB_VOL_INFO_FILE, "w") as f:

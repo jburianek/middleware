@@ -94,17 +94,6 @@ class CtdbPublicIpService(CRUDService):
 
         ctdb_ips = self.middleware.call_sync('ctdb.general.ips')
 
-        try:
-            shared_vol = Path(CTDBConfig.CTDB_LOCAL_MOUNT.value)
-            mounted = shared_vol.is_mount()
-        except Exception:
-            # can happen when mounted but glusterd service
-            # is stopped/crashed etc
-            mounted = False
-
-        if not mounted:
-            raise CallError("CTDB shared volume is in unhealthy state.", errno.ENXIO)
-
         nodes = {}
 
         for entry in self.middleware.call_sync('ctdb.general.listnodes'):
@@ -212,9 +201,9 @@ class CtdbPublicIpService(CRUDService):
         if 'pnn' not in data:
             data['pnn'] = await self.middleware.call('ctdb.general.pnn')
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
+        data |= (await self.middleware.call('ctdb.shared.volume.config'))
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
-        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data , schema_name)
         await self.middleware.call('ctdb.public.ips.reload')
 
         return await self.middleware.call('ctdb.public.ips.query', [('id', '=', data['pnn'])])
@@ -252,10 +241,10 @@ class CtdbPublicIpService(CRUDService):
         data = (await self.get_instance(pnn))['configured_ips'][address]
         data['pnn'] = pnn
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
+        data |= (await self.middleware.call('ctdb.shared.volume.config'))
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
         if data['enabled']:
             await self.middleware.call('ctdb.public.ips.delete_ip', {'public_ip': address})
 
-        await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
+        await self.middleware.call('ctdb.ips.update_file', data, schema_name)
         await self.reallocate()

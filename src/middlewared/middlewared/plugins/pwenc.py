@@ -12,7 +12,7 @@ from Cryptodome.Cipher import AES
 from Cryptodome.Util import Counter
 
 from middlewared.plugins.cluster_linux.utils import CTDBConfig, FuseConfig
-from middlewared.plugins.gluster_linux.pyglfs_utils import glfs
+from middlewared.plugins.gluster_linux.pyglfs_utils import glfs, lock_file_open
 from middlewared.service import Service
 from middlewared.service_exception import CallError
 from middlewared.utils.path import pathref_open
@@ -153,16 +153,6 @@ class CLPWEncService(PWEncService):
         if self.secret_dir_uuid is None:
             self._lookup_secret_dir_uuid()
 
-    @contextmanager
-    def _lock_file_open(self, hdl, flags=os.O_RDWR):
-        with self.lock:
-            fd = hdl.open(flags)
-            fd.posix_lock(fcntl.F_SETLK, fcntl.F_WRLCK)
-            try:
-                yield fd
-            finally:
-                fd.posix_lock(fcntl.F_SETLK, fcntl.F_UNLCK)
-
     def _read_secret(self):
         # Since this is called inside a class method skip _init_secret_dir() call
         ctdb_info = json.loads(Path(CTDB_VOL_INFO_FILE).read_text())
@@ -184,7 +174,7 @@ class CLPWEncService(PWEncService):
                 secret_file = secret_dir.create('clpwenc_secret', os.O_RDWR|os.O_CREAT)
 
             self._secret_permcheck(secret_file, 0o600, False)
-            with self._lock_file_open(secret_file) as fd:
+            with lock_file_open(secret_file, os.O_RDWR) as fd:
                 fd.ftruncate(0)
                 fd.pwrite(secret, 0)
                 fd.fsync()
@@ -225,7 +215,7 @@ class CLPWEncService(PWEncService):
                     raise
                 check_file = secret_dir.create('.check_file', os.O_RDWR)
 
-            with self._lock_file_open(secret) as fd:
+            with lock_file_open(secret, os.O_RDWR) as fd:
                 fd.ftruncate(0)
                 fd.pwrite(self.encrypt(PWENC_CHECK), 0)
 

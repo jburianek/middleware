@@ -246,10 +246,8 @@ class CTDBConfig(enum.Enum):
     CTDB_VOL_NAME = 'ctdb_shared_vol'
     CTDB_VOL_INFO_FILE = f'{MIDDLEWARE_RUN_DIR}/ctdb_vol_info'
     CTDB_LOCAL_MOUNT = os.path.join(LOCAL_MOUNT_BASE, CTDB_VOL_NAME)
-    GM_RECOVERY_FILE = os.path.join(CTDB_LOCAL_MOUNT, REC_FILE)
-    GM_PRI_IP_FILE = os.path.join(CTDB_LOCAL_MOUNT, PRIVATE_IP_FILE)
-    GM_PUB_IP_FILE = os.path.join(CTDB_LOCAL_MOUNT, PUBLIC_IP_FILE)
-    GM_CLUSTERED_SERVICES = os.path.join(CTDB_LOCAL_MOUNT, '.clustered_services')
+
+    CLUSTERED_SERVICES = '.clustered_services'
 
     # ctdb etc config
     CTDB_ETC = '/etc/ctdb'
