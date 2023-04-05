@@ -53,7 +53,7 @@ class CtdbEvent:
         try:
             self.ctdb_info = json.loads(Path(CTDB_VOL_INFO_FILE).read_text())
         except FileNotFoundError:
-            self.ctdb_info = self.client.call('ctdb.shared.volume.info')
+            self.ctdb_info = self.client.call('ctdb.shared.volume.config')
 
         self.ctdb_service_file = os.path.join(self.ctdb_info['mountpoint'], '.clustered_services')
         if os.stat(os.path.join('/cluster', self.ctdb_info['volume_name'])).st_ino != 1:

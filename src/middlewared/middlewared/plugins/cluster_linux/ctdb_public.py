@@ -24,7 +24,7 @@ class CtdbPublicIpService(CRUDService):
     def contents(self, pnn, glfs_info=None, recursion_cnt=0):
         if not glfs_info:
             try:
-                info = self.middleware.call_sync('ctdb.shared.volume.info')
+                info = self.middleware.call_sync('ctdb.shared.volume.config')
                 glfs_uuid = self.middleware.call_sync('gluster.filesystem.lookup', {
                     'volume_name': info['volume_name'],
                     'parent_uuid': info['uuid'],
@@ -212,7 +212,7 @@ class CtdbPublicIpService(CRUDService):
         if 'pnn' not in data:
             data['pnn'] = await self.middleware.call('ctdb.general.pnn')
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
         await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
         await self.middleware.call('ctdb.public.ips.reload')
@@ -252,7 +252,7 @@ class CtdbPublicIpService(CRUDService):
         data = (await self.get_instance(pnn))['configured_ips'][address]
         data['pnn'] = pnn
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
         if data['enabled']:
             await self.middleware.call('ctdb.public.ips.delete_ip', {'public_ip': address})

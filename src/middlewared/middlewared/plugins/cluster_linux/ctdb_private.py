@@ -22,7 +22,7 @@ class CtdbPrivateIpService(CRUDService):
     def contents(self, recursion_cnt=0):
         if not self.glfs_info:
             try:
-                info = self.middleware.call_sync('ctdb.shared.volume.info')
+                info = self.middleware.call_sync('ctdb.shared.volume.config')
                 nodes_uuid = self.middleware.call_sync('gluster.filesystem.lookup', {
                     'volume_name': info['volume_name'],
                     'parent_uuid': info['uuid'],
@@ -93,7 +93,7 @@ class CtdbPrivateIpService(CRUDService):
         schema_name = 'private_create'
         verrors = ValidationErrors()
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
         await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
 
@@ -121,7 +121,7 @@ class CtdbPrivateIpService(CRUDService):
         data = await self.get_instance(id)
         data['enable'] = option['enable']
 
-        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.info')
+        ctdb_volume_info = await self.middleware.call('ctdb.shared.volume.config')
         await self.middleware.call('ctdb.ips.common_validation', data, schema_name, verrors)
         await self.middleware.call('ctdb.ips.update_file', data | ctdb_volume_info, schema_name)
 

@@ -12,7 +12,7 @@
         Path(i).mkdir(parents=True, exist_ok=True)
 
     try:
-        ctdb_shared_vol_info = middleware.call_sync('ctdb.shared.volume.info')
+        ctdb_shared_vol_info = middleware.call_sync('ctdb.shared.volume.config')
     except Exception:
         middleware.logger.debug('Failed to retrieve ctdb volume information', exc_info=True)
         raise FileShouldNotExist()
@@ -33,7 +33,7 @@
     try:
         bricks = middleware.call_sync(
             'gluster.volume.query',
-            [['name', '=', 'ctdb_shared_vol']],
+            [['name', '=', ctdb_shared_vol_info['volume_name']]],
             {'get': True}
         )['bricks']
     except Exception:

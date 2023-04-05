@@ -40,12 +40,15 @@ class CtdbSharedVolumeService(Service):
 
         return data
 
-    def info(self):
+    def config(self):
         info_file = Path(CTDB_VOL_INFO_FILE)
         try:
             return json.loads(info_file.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             return self.generate_info()
+
+    def update(self, data):
+        raise CallError('Updates to ctdb shared volume configuration are not supported', errno.EOPNOTSUPP)
 
     async def validate(self):
         filters = [('id', '=', CTDB_VOL_NAME)]
@@ -135,7 +138,7 @@ class CtdbSharedVolumeService(Service):
             await wait_id.wait()
 
         # Write our metadata configuration file
-        await self.middleware.call("ctdb.shared.volume.info")
+        await self.middleware.call('ctdb.shared.volume.config')
 
         # Initialize clustered secrets
         if not await self.middleware.call('clpwenc.check'):
