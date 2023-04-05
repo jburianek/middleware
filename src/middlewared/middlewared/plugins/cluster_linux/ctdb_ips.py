@@ -131,7 +131,7 @@ class CtdbIpService(Service):
 
         with self.lockfile_open(ctdb_file) as f:
             st = f.fstat()
-            linex = []
+            lines = []
             if is_private:
                 address = data['address']
             else:
@@ -141,7 +141,7 @@ class CtdbIpService(Service):
 
             # read the data first
             if st.st_size > 0:
-                linex = f.pread(0, st.st_size).decode().splitlines()
+                lines.extend(f.pread(0, st.st_size).decode().splitlines())
 
             # before we truncate the file, let's make sure we don't hit an
             # unexpected error
