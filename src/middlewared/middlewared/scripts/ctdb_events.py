@@ -32,6 +32,7 @@ class CtdbEvent:
         self.pnn = -1
         self.node_status = {}
         self.init_node_status = {}
+        self.ctdb_root_dir = None
 
     def __enter__(self):
         return self
@@ -51,10 +52,9 @@ class CtdbEvent:
             self.logger.error("Failed to initialize middleware client", exc_info=True)
             return False
 
-    def check_ctdb_shared_volume(self):
-        st = os.stat(CTDB_VOL)
-        if st.st_ino != 1:
-            raise RuntimeError('ctdb shared volume not mounted')
+    def check_ctdb_root_dir(self):
+        self.ctdb_root_dir = self.client.call('ctdb.root_dir.get_gluster_volume_location')
+        return self.ctdb_root_dir
 
     def load_service_file(self):
         """
@@ -142,7 +142,7 @@ class CtdbEvent:
             return
 
         try:
-            self.check_ctdb_shared_volume()
+            self.check_ctdb_root_dir()
         except Exception as e:
             self.client.call('ctdb.event.process', {
                 'event': 'STARTUP',
@@ -180,7 +180,7 @@ class CtdbEvent:
         }
 
         try:
-            self.check_ctdb_shared_volume()
+            self.check_ctdb_root_dir()
         except Exception as e:
             payload = {
                 'event': 'MONITOR',

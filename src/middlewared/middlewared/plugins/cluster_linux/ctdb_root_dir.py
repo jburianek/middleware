@@ -10,11 +10,23 @@ ROOT_DIR_NAME = 'ctdb-root-dir'
 CTDB_ROOT_DIR_VOLUME_LOCATION = GTDBConfig.CTDB_ROOT_DIR_VOLUME_LOCATION.value
 
 
+def rmtree(handle):
+    for i in handle.lookup(ROOT_DIR_NAME).fts_open():
+        if i.file_type == 'DIRECTORY':
+            rmtree
+
+
 class CtdbRootDirService(Service):
 
     class Config:
         namespace = 'ctdb.root_dir'
         private = True
+
+    def get_root_handle(self, gvol_name):
+        return pyglfs.Volume({
+            'volume_name': gvol_name,
+            'volfile_servers': [{'host': '127.0.0.1', 'proto': 'tcp', 'port': 0}]
+        }).get_root_handle()
 
     @job(lock=LOCK)
     def init(self, job, gvol_name):
@@ -30,10 +42,7 @@ class CtdbRootDirService(Service):
         imperative that we protect this directory via permissions. We lock this down
         to only root user and nobody else may access it.
         """
-        root_handle = pyglfs.Volume({
-            'volume_name': gvol_name,
-            'volfile_servers': [{'host': '127.0.0.1', 'proto': 'tcp', 'port': 0}]
-        }).get_root_handle()
+        root_handle = self.get_root_handle(gvol_name)
 
         # create the root dir
         try:
@@ -60,6 +69,24 @@ class CtdbRootDirService(Service):
 
         with open(CTDB_ROOT_DIR_VOLUME_LOCATION, 'w') as f:
             f.write(gvol_name)
+
+    @job(lock=LOCK)
+    def teardown(self):
+        gvol = self.get_gluster_volume_location()
+        if gvol is None:
+            return
+
+        rmtree(self.get_root_handle(gvol))
+
+        for i in self.get_root_handle(gvol).lookup(ROOT_DIR_NAME).fts_open():
+            if i.file_type == 'DIRECTORY':
+
+            if i.file_type == 'FILE':
+                pass
+
+    def rem_gluster_volume_location(self):
+        init_job = self.middleware.call('ctdb.root_dir.teardown')
+        init_job.wait_sync(raise_error=True)
 
     def set_gluster_volume_location(self, gvol_name):
         init_job = self.middleware.call('ctdb.root_dir.init', gvol_name)
