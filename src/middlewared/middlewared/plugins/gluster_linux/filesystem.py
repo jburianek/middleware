@@ -501,9 +501,10 @@ class GlusterFilesystemService(Service):
 
         acl_op = data['options'].pop('acl_operation', None)
         if acl_op == 'INHERIT':
-            xat_buf = hdl.open(os.O_RDONLY).fgetxattr('system.posix_acl_default')
+            fd = hdl.open(os.O_RDONLY)
+            xat_buf = fd.fgetxattr('system.posix_acl_default')
 
-        if data['uid'] == -1 and data['gid'] == -1 and data.get('mode') is None:
+        if data['options']['uid'] == -1 and dat['options']['gid'] == -1 and data['options']['mode'] is None:
             attrs = None
         else:
             attrs = data['options']
@@ -516,7 +517,7 @@ class GlusterFilesystemService(Service):
                 job.set_progress(50, f'Setting permissions: {entry.parent_path}/{entry.name}')
 
             if acl_op == 'INHERIT':
-                fd = entry.hdl.open(os.O_RDWR)
+                fd = entry.handle.open(os.O_RDWR)
                 if entry.file_type == 'DIRECTORY':
                     fd.fsetxattr('system.posix_acl_default', xat_buf)
 
@@ -525,7 +526,7 @@ class GlusterFilesystemService(Service):
             elif acl_op == 'STRIP':
                 # TODO: we should probably add option to pyglfs to ignore errors on rmxattr
                 # so that we can avoid listing them per file.
-                fd = entry.hdl.open(os.O_RDWR)
+                fd = entry.handle.open(os.O_RDWR)
                 xattrs = fd.flistxattr()
                 if 'system.posix_acl_default' in xattrs:
                     fd.fremovexattr('system.posix_acl_default')
@@ -534,4 +535,4 @@ class GlusterFilesystemService(Service):
                     fd.fremovexattr('system.posix_acl_access')
 
             if attrs:
-                entry.hdl.setattrs(**attrs)
+                entry.handle.setattrs(**attrs)
