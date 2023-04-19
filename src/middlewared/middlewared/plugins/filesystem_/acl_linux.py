@@ -158,12 +158,12 @@ class FilesystemService(Service, ACLBase):
         if loc == FSLocation.CLUSTER:
             parts = data['path'].split('/', 3)
             target = self.middleware.call_sync('gluster.filesystem.lookup', {
-                'gluster_volume': parts[2],
+                'volume_name': parts[2],
                 'parent_uuid': None,
                 'path': parts[3],
             })
             glfs_job = self.middleware.call_sync('gluster.filesystem.setperm', {
-                'gluster_volume': parts[2],
+                'volume_name': parts[2],
                 'uuid': target['uuid'],
                 'options': {'uid': uid, 'gid': gid}
             })
@@ -243,12 +243,12 @@ class FilesystemService(Service, ACLBase):
         if loc == FSLocation.CLUSTER:
             parts = data['path'].split('/', 3)
             target = self.middleware.call_sync('gluster.filesystem.lookup', {
-                'gluster_volume': parts[2],
+                'volume_name': parts[2],
                 'parent_uuid': None,
                 'path': parts[3],
             })
             glfs_job = self.middleware.call_sync('gluster.filesystem.setperm', {
-                'gluster_volume': parts[2],
+                'volume_name': parts[2],
                 'uuid': target['uuid'],
                 'options': {'uid': uid, 'gid': gid, 'mode': mode, 'acl_operation': 'STRIP'}
             })
@@ -687,12 +687,12 @@ class FilesystemService(Service, ACLBase):
         if data['loc'] == FSLocation.CLUSTER:
             parts = data['path'].split('/', 3)
             target = self.middleware.call_sync('gluster.filesystem.lookup', {
-                'gluster_volume': parts[2],
+                'volume_name': parts[2],
                 'parent_uuid': None,
                 'path': parts[3],
             })
             glfs_job = self.middleware.call_sync('gluster.filesystem.setperm', {
-                'gluster_volume': parts[2],
+                'volume_name': parts[2],
                 'uuid': target['uuid'],
                 'options': {'uid': uid, 'gid': gid, 'acl_operation': 'INHERIT'}
             })
