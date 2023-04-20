@@ -1286,9 +1286,11 @@ def returns(*schema):
     return returns_internal
 
 
-def accepts(*schema, deprecated=None):
+def accepts(*schema, deprecated=None, roles=None):
     """
     `deprecated` is a list of pairs of functions that will adapt legacy method call signatures.
+
+    `roles` is a list of user roles that will gain access to this method.
 
     First member of pair is a function that accepts a list of args and returns `True` if a legacy method call
     matching a specific legacy signature was detected.
@@ -1406,6 +1408,7 @@ def accepts(*schema, deprecated=None):
         nf.accepts = list(schema)
         if hasattr(func, 'returns'):
             nf.returns = func.returns
+        nf.roles = roles or []
         nf.wraps = f
         nf.wrap = wrap
 
