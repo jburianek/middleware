@@ -4,11 +4,11 @@ import random
 import aiohttp
 import os
 
-from copy import deepcopy
 from collections import defaultdict
 from datetime import datetime
 
 from middlewared.service import Service
+from middlewared.utils.osc import getmntinfo
 
 USAGE_URL = 'https://usage.truenas.com/submit'
 
@@ -92,6 +92,7 @@ class UsageService(Service):
             'total_snapshots': 0,
             'total_datasets': 0,
             'total_zvols': 0,
+            'mntinfo': getmntinfo(),
         }
         for ds in self.middleware.call_sync('zfs.dataset.query', [], opts):
             context['total_snapshots'] += ds['snapshot_count']
@@ -137,49 +138,34 @@ class UsageService(Service):
         return {'total_capacity': context['total_capacity']}
 
     def gather_backup_data(self, context):
-        backed = {
-            'cloudsync': 0,
-            'rsynctask': 0,
-            'zfs_replication': 0,
-            'total_size': 0,
-        }
-        datasets_data = context['datasets']
-        datasets = deepcopy(datasets_data)
+        backed = {'cloudsync': 0, 'rsynctask': 0, 'zfs_replication': 0, 'total_size': 0}
+        filters = [['enabled', '=', True], ['direction', '=', 'PUSH'], ['locked', '=', False]]
+        tasks_found = {}
         for namespace in ('cloudsync', 'rsynctask'):
-            task_datasets = deepcopy(datasets_data)
-            for task in self.middleware.call_sync(
-                f'{namespace}.query', [['enabled', '=', True], ['direction', '=', 'PUSH'], ['locked', '=', False]]
-            ):
+            for task in self.middleware.call_sync(f'{namespace}.query', filters):
                 try:
-                    task_ds = self.middleware.call_sync('zfs.dataset.path_to_dataset', task['path'])
+                    task_ds = self.middleware.call_sync('zfs.dataset.path_to_dataset', task['path'], context['mntinfo'])
                 except Exception:
-                    self.logger.error('Unable to retrieve dataset of path %r', task['path'], exc_info=True)
-                    task_ds = None
+                    self.logger.error('Failed mapping path %r to dataset', task['path'], exc_info=True)
+                else:
+                    if (task_ds and task_ds in context['datasets']) and (task_ds not in tasks_found):
+                        # dataset for the task was found, and exists and hasn't already been calculated
+                        # (i.e. tasks can point to same dataset)
+                        size = context[task_ds]['properties']['used']['parsed']
+                        backed[namespace] += size
+                        backed['total_size'] += size
+                        tasks_found.add(task_ds)
 
-                if task_ds:
-                    task_ds_data = task_datasets.pop(task_ds, None)
-                    if task_ds_data:
-                        backed[namespace] += task_ds_data['properties']['used']['parsed']
-                    ds = datasets.pop(task_ds, None)
-                    if ds:
-                        backed['total_size'] += ds['properties']['used']['parsed']
+        repl_found = {}
+        filters = [['enabled', '=', True], ['transport', '!=', 'LOCAL'], ['direction', '=', 'PUSH']]
+        for task in self.middleware.call_sync('replication.query', filters):
+            for source in filter(lambda s: s in context['datasets'] and s not in repl_found, task['source_datasets']):
+                size = context['datasets'][source]['properties']['used']['parsed']
+                backed['zfs_replication'] += size
+                backed['total_size'] += size
+                repl_found.add(source)
 
-        repl_datasets = deepcopy(datasets_data)
-        for task in self.middleware.call_sync(
-            'replication.query', [['enabled', '=', True], ['transport', '!=', 'LOCAL'], ['direction', '=', 'PUSH']]
-        ):
-            for source in filter(lambda s: s in repl_datasets, task['source_datasets']):
-                r_ds = repl_datasets.pop(source, None)
-                if r_ds:
-                    backed['zfs_replication'] += r_ds['properties']['used']['parsed']
-                ds = datasets.pop(source, None)
-                if ds:
-                    backed['total_size'] += ds['properties']['used']['parsed']
-
-        return {
-            'data_backup_stats': backed,
-            'data_without_backup_size': sum([ds['properties']['used']['parsed'] for ds in datasets.values()], start=0)
-        }
+        return {'data_backup_stats': backed, 'data_without_backup_size': context['total_capacity'] - backed}
 
     def gather_filesystem_usage(self, context):
         return {
