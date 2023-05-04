@@ -142,6 +142,7 @@ class UsageService(Service):
         filters = [['enabled', '=', True], ['direction', '=', 'PUSH'], ['locked', '=', False]]
         tasks_found = {}
         for namespace in ('cloudsync', 'rsynctask'):
+            tasks_found = {}  # reinitialize on each namespace
             for task in self.middleware.call_sync(f'{namespace}.query', filters):
                 try:
                     task_ds = self.middleware.call_sync('zfs.dataset.path_to_dataset', task['path'], context['mntinfo'])
@@ -150,22 +151,21 @@ class UsageService(Service):
                 else:
                     if (task_ds and task_ds in context['datasets']) and (task_ds not in tasks_found):
                         # dataset for the task was found, and exists and hasn't already been calculated
-                        # (i.e. tasks can point to same dataset)
                         size = context[task_ds]['properties']['used']['parsed']
                         backed[namespace] += size
                         backed['total_size'] += size
                         tasks_found.add(task_ds)
 
-        repl_found = {}
+        tasks_found.clear()
         filters = [['enabled', '=', True], ['transport', '!=', 'LOCAL'], ['direction', '=', 'PUSH']]
         for task in self.middleware.call_sync('replication.query', filters):
-            for source in filter(lambda s: s in context['datasets'] and s not in repl_found, task['source_datasets']):
+            for source in filter(lambda s: s in context['datasets'] and s not in tasks_found, task['source_datasets']):
                 size = context['datasets'][source]['properties']['used']['parsed']
                 backed['zfs_replication'] += size
                 backed['total_size'] += size
-                repl_found.add(source)
+                tasks_found.add(source)
 
-        return {'data_backup_stats': backed, 'data_without_backup_size': context['total_capacity'] - backed}
+        return {'data_backup_stats': backed, 'data_without_backup_size': context['total_capacity'] - backed['total_size']}
 
     def gather_filesystem_usage(self, context):
         return {
