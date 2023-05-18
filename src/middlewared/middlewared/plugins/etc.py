@@ -291,7 +291,7 @@ class EtcService(Service):
             ]
         },
         'ntpd': [
-            {'type': 'mako', 'path': 'ntp.conf'}
+            {'type': 'mako', 'path': 'chrony/chrony.conf'}
         ],
         'localtime': [
             {'type': 'py', 'path': 'localtime_config'}
