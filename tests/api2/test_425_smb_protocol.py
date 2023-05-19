@@ -19,6 +19,8 @@ from auto_config import (
 )
 from pytest_dependency import depends
 from protocols import SMB, smb_connection, smb_share
+from samba import ntstatus
+from samba import NTSTATUSError
 
 reason = 'Skipping for test development testing'
 # comment pytestmark for development testing with --dev-test
@@ -777,8 +779,12 @@ def test_181_create_and_disable_share(request):
                 results = PUT(f"/sharing/smb/id/{tmp_id}/", {"enabled": False})
                 assert results.status_code == 200, results.text
 
-                fd = c.create_file('canary', "w")
-                assert True, "Share still writable"
+                try:
+                    fd = c.create_file('canary', "w")
+                except NTSTATUSError as status:
+                    assert status[0] == ntstatus.NT_STATUS_NETWORK_NAME_DELETED, str(status)
+                else:
+                    assert c.connected is True
 
 
 @pytest.mark.dependency(name="XATTR_CHECK_SMB_READ")
