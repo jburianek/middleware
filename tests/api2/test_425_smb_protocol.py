@@ -763,6 +763,23 @@ def test_180_create_share_multiple_dirs_deep(request):
         results = POST('/filesystem/stat/', os.path.join(dirs_path, 'nested_dirs_file'))
         assert results.status_code == 200, results.text
 
+def test_181_create_and_disable_share(request):
+    depends(request, ["SMB_USER_CREATED"])
+    with create_dataset(pool_name, 'smb_disabled', options={'share_type': 'SMB'}) as ds:
+        with smb_share(dirs_path, {'name': 'TO_DISABLE'}) as sh:
+            with smb_connection(
+                host=ip,
+                share='TO_DISABLE',
+                username=SMB_USER,
+                password=SMB_PWD,
+                smb1=False
+            ) as c:
+                results = PUT(f"/sharing/smb/id/{sh['id']}/", {"enabled": false})
+                assert results.status_code == 200, results.text
+
+                fd = c.create_file('canary', "w")
+                assert True, "Share still writable"
+
 
 @pytest.mark.dependency(name="XATTR_CHECK_SMB_READ")
 def test_200_delete_smb_user(request):
