@@ -766,7 +766,7 @@ def test_180_create_share_multiple_dirs_deep(request):
 def test_181_create_and_disable_share(request):
     depends(request, ["SMB_USER_CREATED"])
     with create_dataset(pool_name, 'smb_disabled', options={'share_type': 'SMB'}) as ds:
-        with smb_share(dirs_path, {'name': 'TO_DISABLE'}) as sh:
+        with smb_share(ds['mountpoint'], {'name': 'TO_DISABLE'}) as tmp_id:
             with smb_connection(
                 host=ip,
                 share='TO_DISABLE',
@@ -774,7 +774,7 @@ def test_181_create_and_disable_share(request):
                 password=SMB_PWD,
                 smb1=False
             ) as c:
-                results = PUT(f"/sharing/smb/id/{sh['id']}/", {"enabled": false})
+                results = PUT(f"/sharing/smb/id/{tmp_id}/", {"enabled": False})
                 assert results.status_code == 200, results.text
 
                 fd = c.create_file('canary', "w")
