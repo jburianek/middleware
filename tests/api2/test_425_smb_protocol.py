@@ -782,7 +782,7 @@ def test_181_create_and_disable_share(request):
                 try:
                     fd = c.create_file('canary', "w")
                 except NTSTATUSError as status:
-                    assert status[0] == ntstatus.NT_STATUS_NETWORK_NAME_DELETED, str(status)
+                    assert status.args[0] == ntstatus.NT_STATUS_NETWORK_NAME_DELETED, str(status)
                 else:
                     assert c.connected is True
 
