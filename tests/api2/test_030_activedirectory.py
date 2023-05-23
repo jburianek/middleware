@@ -271,6 +271,19 @@ def test_07_enable_leave_activedirectory(request):
         addresses = [x['address'] for x in res['result']]
         assert ip in addresses
 
+        res = make_ws_request(ip, {
+            'msg': 'method',
+            'method': 'privilege.query',
+            'params': [['name', '=', AD_DOMAIN]]
+        })
+        error = res.get('error')
+        assert error is None, str(error)
+
+        assert len(res['result']['ds_groups'] == 1), str(res['result'])
+        assert res['result']['ds_groups'][0]['name'].endswith('domain admins')
+        assert res['result']['ds_groups'][0]['sid'].endswith('512')
+        assert res['result']['allowlist'][0] == {'method': '*', 'resource': '*'}
+
     results = GET('/activedirectory/get_state/')
     assert results.status_code == 200, results.text
     assert results.json() == 'DISABLED', results.text
@@ -281,6 +294,15 @@ def test_07_enable_leave_activedirectory(request):
     results = GET('/activedirectory/started/')
     assert results.status_code == 200, results.text
     assert results.json() is False, results.text
+
+    res = make_ws_request(ip, {
+        'msg': 'method',
+        'method': 'privilege.query',
+        'params': [['name', '=', AD_DOMAIN]]
+    })
+    error = res.get('error')
+    assert error is None, str(error)
+    assert len(res['result']['ds_groups'] == 0), str(res['result'])
 
 
 def test_08_activedirectory_smb_ops(request):

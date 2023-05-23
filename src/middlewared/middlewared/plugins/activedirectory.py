@@ -609,6 +609,40 @@ class ActiveDirectoryService(TDBWrapConfigService):
         await self.middleware.call('idmap.update', idmap_id, idmap)
 
     @private
+    async def add_privileges(self, domain_name):
+        """
+        Grant Domain Admins full control of server
+        """
+        existing_privileges = await self.middleware.call(
+            'privilege.query',
+            [["name", "=", domain_name]]
+        )
+        if existing_privileges:
+            return
+
+        domain_info = await self.middleware.call('idmap.domain_info', domain_name)
+        await self.middleware.call('privilege.create', {
+            'name': domain_name,
+            'ds_groups': [f'{domain_info["sid"]}-512'],
+            'allowlist': [{'method': '*', 'resource': '*'}],
+            'web_shell': True
+        })
+
+    @private
+    async def remove_privileges(self, domain_name):
+        """
+        Remove any auto-granted domain privileges
+        """
+        existing_privileges = await self.middleware.call(
+            'privilege.query',
+            [["name", "=", domain_name]]
+        )
+        if not existing_privileges:
+            return
+
+        await self.middleware.call('privilege.delete', existing_privileges[0]['id'])
+
+    @private
     @job(lock="AD_start_stop")
     async def start(self, job):
         """
@@ -762,6 +796,12 @@ class ActiveDirectoryService(TDBWrapConfigService):
         else:
             await self.set_state(DSStatus['FAULTED'].name)
             self.logger.warning('Server is joined to domain [%s], but is in a faulted state.', ad['domainname'])
+
+        job.set_progress(90, 'Granting privileges to domain admins.')
+        try:
+            await self.add_privileges(ad['domainname'])
+        except Exception:
+            self.logger.warning('Failed to grant Domain Admins privileges', exc_info=True)
 
         if smb_ha_mode == 'CLUSTERED':
             job.set_progress(95, 'Propagating activedirectory service reload to cluster members')
@@ -1057,6 +1097,11 @@ class ActiveDirectoryService(TDBWrapConfigService):
                 'kerberos_principal': '',
             }
         }
+
+        try:
+            await self.remove_privileges(ad['domainname'])
+        except Exception:
+            self.logger.warning('Failed to remove Domain Admins privileges', exc_info=True)
 
         job.set_progress(5, 'Obtaining kerberos ticket for privileged user.')
         cred = await self.middleware.call('kerberos.get_cred', payload)
