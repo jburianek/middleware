@@ -274,7 +274,7 @@ def test_07_enable_leave_activedirectory(request):
         res = make_ws_request(ip, {
             'msg': 'method',
             'method': 'privilege.query',
-            'params': [['name', '=', AD_DOMAIN]]
+            'params': [[['name', '=', AD_DOMAIN]]]
         })
         error = res.get('error')
         assert error is None, str(error)
@@ -298,7 +298,7 @@ def test_07_enable_leave_activedirectory(request):
     res = make_ws_request(ip, {
         'msg': 'method',
         'method': 'privilege.query',
-        'params': [['name', '=', AD_DOMAIN]]
+        'params': [[['name', '=', AD_DOMAIN]]]
     })
     error = res.get('error')
     assert error is None, str(error)
@@ -445,18 +445,27 @@ def test_10_account_privilege_authentication(request):
     ):
         call("system.general.update", {"ds_auth": True})
         try:
-            gid = call("user.get_user_obj", {"username": AD_USER})["pw_gid"]
+            # RID 513 is constant for "Domain Users"
+            domain_sid = call("idmap.domain_info", AD_DOMAIN)['sid']
             with privilege({
                 "name": "AD privilege",
                 "local_groups": [],
-                "ds_groups": [gid],
+                "ds_groups": [f"{sid}-513"],
                 "allowlist": [{"method": "CALL", "resource": "system.info"}],
                 "web_shell": False,
             }):
-                with client(auth=(f"{AD_USER}@", ADPASSWORD)) as c:
+                with client(auth=(f"{AD_USER}@{AD_DOMAIN}", ADPASSWORD)) as c:
                     methods = c.call("core.get_methods")
 
                 assert "system.info" in methods
                 assert "pool.create" not in methods
+
+                # ADUSERNAME is member of domain admins and will have
+                # all privileges
+                with client(auth=(f"{ADUSERNAME}@{AD_DOMAIN}", ADPASSWORD)) as c:
+                    methods = c.call("core.get_methods")
+
+                assert "pool.create" in methods
+
         finally:
             call("system.general.update", {"ds_auth": False})

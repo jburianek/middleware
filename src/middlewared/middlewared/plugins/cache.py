@@ -352,7 +352,7 @@ class DSCache(Service):
         elif not entry:
             raise KeyError(who_str if who_str else who_id)
 
-        if not options['smb']:
+        if entry and not options['smb']:
             entry['sid'] = None
             entry['nt_name'] = None
 
@@ -502,26 +502,17 @@ class DSCache(Service):
         if not enabled_ds:
             return res
 
-        if is_name_check and filters[0][1] == '=':
+        if (is_name_check or is_id_check) and filters[0][1] == '=':
             # exists in local sqlite database, return results
             if res:
                 return res
 
+            key = 'who' if is_name_check else 'id'
             entry = await self.retrieve(enabled_ds.upper(), {
                 'idtype': objtype[:-1],
-                'who': filters[0][2],
+                key: filters[0][2],
             }, {'synthesize': True, 'smb': get_smb})
-            return [entry] if entry else []
 
-        if is_id_check and filters[0][1] == '=':
-            # exists in local sqlite database, return results
-            if res:
-                return res
-
-            entry = await self.retrieve(enabled_ds.upper(), {
-                'idtype': objtype[:-1],
-                'id': filters[0][2],
-            }, {'synthesize': True})
             return [entry] if entry else []
 
         entries = await self.entries(enabled_ds.upper(), objtype[:-1])
