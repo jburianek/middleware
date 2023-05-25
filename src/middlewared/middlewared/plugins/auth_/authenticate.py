@@ -44,6 +44,7 @@ class AuthService(Service):
             if not hmac.compare_digest(crypt.crypt(password, root['unixhash']), root['unixhash']):
                 return None
         elif not await self.middleware.call('auth.libpam_authenticate', username, password):
+            self.logger.debug("XXX: failed to authenticate %s via PAM", username)
             return None
 
         return await self.authenticate_user({'username': username}, local)
@@ -63,10 +64,13 @@ class AuthService(Service):
         groups = set(user['grouplist'])
         groups_key = 'local_groups' if local else 'ds_groups'
 
+        self.logger.debug("XXX: Grouplist for %s: %s, is_local: %s", query, groups, local)
         privileges = await self.middleware.call('privilege.privileges_for_groups', groups_key, groups)
         if not privileges:
+            self.logger.debug("XXX: no privileges")
             return None
 
+        self.logger.debug("XXX: privileges: %s", privileges)
         return {
             'username': user['pw_name'],
             'privilege': await self.middleware.call('privilege.compose_privilege', privileges),
