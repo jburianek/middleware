@@ -274,15 +274,16 @@ def test_07_enable_leave_activedirectory(request):
         res = make_ws_request(ip, {
             'msg': 'method',
             'method': 'privilege.query',
-            'params': [[['name', '=', AD_DOMAIN]]]
+            'params': [[['name', 'C=', AD_DOMAIN]]]
         })
         error = res.get('error')
         assert error is None, str(error)
+        assert len(res['result']) == 1, str(res['result'])
 
-        assert len(res['result']['ds_groups'] == 1), str(res['result'])
-        assert res['result']['ds_groups'][0]['name'].endswith('domain admins')
-        assert res['result']['ds_groups'][0]['sid'].endswith('512')
-        assert res['result']['allowlist'][0] == {'method': '*', 'resource': '*'}
+        assert len(res['result'][0]['ds_groups']) == 1, str(res['result'])
+        assert res['result'][0]['ds_groups'][0]['name'].endswith('domain admins')
+        assert res['result'][0]['ds_groups'][0]['sid'].endswith('512')
+        assert res['result'][0]['allowlist'][0] == {'method': '*', 'resource': '*'}
 
     results = GET('/activedirectory/get_state/')
     assert results.status_code == 200, results.text
@@ -298,11 +299,11 @@ def test_07_enable_leave_activedirectory(request):
     res = make_ws_request(ip, {
         'msg': 'method',
         'method': 'privilege.query',
-        'params': [[['name', '=', AD_DOMAIN]]]
+        'params': [[['name', 'C=', AD_DOMAIN]]]
     })
     error = res.get('error')
     assert error is None, str(error)
-    assert len(res['result']['ds_groups'] == 0), str(res['result'])
+    assert len(res['result']) == 0, str(res['result'])
 
 
 def test_08_activedirectory_smb_ops(request):

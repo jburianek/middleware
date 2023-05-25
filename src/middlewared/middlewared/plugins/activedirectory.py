@@ -609,7 +609,7 @@ class ActiveDirectoryService(TDBWrapConfigService):
         await self.middleware.call('idmap.update', idmap_id, idmap)
 
     @private
-    async def add_privileges(self, domain_name):
+    async def add_privileges(self, domain_name, workgroup):
         """
         Grant Domain Admins full control of server
         """
@@ -620,7 +620,7 @@ class ActiveDirectoryService(TDBWrapConfigService):
         if existing_privileges:
             return
 
-        domain_info = await self.middleware.call('idmap.domain_info', domain_name)
+        domain_info = await self.middleware.call('idmap.domain_info', workgroup)
         await self.middleware.call('privilege.create', {
             'name': domain_name,
             'ds_groups': [f'{domain_info["sid"]}-512'],
@@ -797,12 +797,6 @@ class ActiveDirectoryService(TDBWrapConfigService):
             await self.set_state(DSStatus['FAULTED'].name)
             self.logger.warning('Server is joined to domain [%s], but is in a faulted state.', ad['domainname'])
 
-        job.set_progress(90, 'Granting privileges to domain admins.')
-        try:
-            await self.add_privileges(ad['domainname'])
-        except Exception:
-            self.logger.warning('Failed to grant Domain Admins privileges', exc_info=True)
-
         if smb_ha_mode == 'CLUSTERED':
             job.set_progress(95, 'Propagating activedirectory service reload to cluster members')
             cl_reload = await self.middleware.call('clusterjob.submit', 'activedirectory.cluster_reload', 'START')
@@ -811,6 +805,14 @@ class ActiveDirectoryService(TDBWrapConfigService):
 
         job.set_progress(100, f'Active Directory start completed with status [{ret.name}]')
         await self.middleware.call('service.reload', 'idmap')
+
+        if ret == neterr.JOINED:
+            job.set_progress(100, 'Granting privileges to domain admins.')
+            try:
+                await self.add_privileges(ad['domainname'], dc_info['Pre-Win2k Domain'])
+            except Exception:
+                self.logger.warning('Failed to grant Domain Admins privileges', exc_info=True)
+
         return ret.name
 
     @private
