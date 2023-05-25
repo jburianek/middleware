@@ -455,7 +455,7 @@ def test_10_account_privilege_authentication(request):
                 "allowlist": [{"method": "CALL", "resource": "system.info"}],
                 "web_shell": False,
             }):
-                with client(auth=(f"{AD_USER}@{AD_DOMAIN}", ADPASSWORD)) as c:
+                with client(auth=(f"limiteduser@{AD_DOMAIN}", ADPASSWORD)) as c:
                     methods = c.call("core.get_methods")
 
                 assert "system.info" in methods
