@@ -134,6 +134,8 @@ if 'ip' not in locals() and 'passwd' not in locals() and 'interface' not in loca
     print(error_msg)
     exit()
 
+tests = ['api2/test_001_ssh.py', 'api2/test_500_system_ntpservers.py']
+
 # create random hostname and random fake domain
 digit = ''.join(secrets.choice((string.ascii_uppercase + string.digits)) for i in range(10))
 hostname = f'test{digit}'
