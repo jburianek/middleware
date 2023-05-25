@@ -457,6 +457,10 @@ class DSCache(Service):
                     'id_type': 'GROUP',
                     'id': grp_obj['gr_gid'],
                 })
+            except CallError as e:
+                if e.errno != errno.ENOENT:
+                    self.logger.error('Failed to retrieve SID for uid: %d', grp.gr_gid, exc_info=True)
+                sid = None
             except Exception:
                 self.logger.error('Failed to retrieve SID for uid: %d', grp.gr_gid, exc_info=True)
                 sid = None

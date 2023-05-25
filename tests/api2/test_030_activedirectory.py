@@ -447,7 +447,7 @@ def test_10_account_privilege_authentication(request):
         call("system.general.update", {"ds_auth": True})
         try:
             # RID 513 is constant for "Domain Users"
-            domain_sid = call("idmap.domain_info", AD_DOMAIN)['sid']
+            domain_sid = call("idmap.domain_info", AD_DOMAIN.split(".")[0])['sid']
             with privilege({
                 "name": "AD privilege",
                 "local_groups": [],
