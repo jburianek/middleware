@@ -451,7 +451,7 @@ def test_10_account_privilege_authentication(request):
             with privilege({
                 "name": "AD privilege",
                 "local_groups": [],
-                "ds_groups": [f"{sid}-513"],
+                "ds_groups": [f"{domain_sid}-513"],
                 "allowlist": [{"method": "CALL", "resource": "system.info"}],
                 "web_shell": False,
             }):
