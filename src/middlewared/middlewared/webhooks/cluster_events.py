@@ -30,6 +30,7 @@ class ClusterEventsApplication(object):
                 method = 'clusterjob.process_queue'
 
             if method is not None:
+                self.middleware.logger.debug("XXX: processing event for %s", method)
                 if event.startswith('VOLUME'):
                     await self.middleware.call(method, {'name': name})
                 elif event.startswith(('CTDB', 'SMB')):
