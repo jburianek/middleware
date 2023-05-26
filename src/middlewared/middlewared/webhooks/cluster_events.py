@@ -86,7 +86,7 @@ class ClusterEventsApplication(object):
             }
 
             # how long each POST request can take (in seconds)
-            timeout = 30
+            timeout = 55
 
             # now send the requests in parallel
             async with aiohttp.ClientSession() as session:
