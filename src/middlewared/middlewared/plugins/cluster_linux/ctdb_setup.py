@@ -16,15 +16,18 @@ class CtdbInitService(Service):
         """
 
         result = {'logit': True, 'success': False}
+        self.logger.debug("XXX: entered")
         if not await self.middleware.call('service.started', 'glusterd'):
             return result
 
+        self.logger.debug("XXX: looking up volume config")
         try:
             shared_vol_config = await self.middleware.call('ctdb.shared.volume.config')
         except Exception:
             self.logger.error('Failed to retrieve ctdb shared volume configuration', exc_info=True)
             return result
 
+        self.logger.debug("XXX: checking mountpoint")
         shared_vol = Path(shared_vol_config['volume_mountpoint'])
         try:
             mounted = shared_vol.is_mount()
@@ -43,6 +46,7 @@ class CtdbInitService(Service):
         if not await self.middleware.call('ctdb.setup.conf'):
             return result
 
+        self.logger.debug("XXX: setting up private ip file")
         return await self.middleware.call('ctdb.setup.private_ip_file', result, shared_vol_config)
 
     def conf(self):
@@ -74,6 +78,7 @@ class CtdbInitService(Service):
         # ctdb.private.ips.create method is
         # responsible for creating this file.
         if not pri_c_file.exists():
+            self.logger.debug("XXX: private IP file does not exist")
             result['logit'] = False
             return result
         else:
@@ -96,6 +101,7 @@ class CtdbInitService(Service):
         result['logit'] = False
         result['success'] = True
 
+        self.logger.debug("XXX: done with private IP file")
         return result
 
     def public_ip_file(self):

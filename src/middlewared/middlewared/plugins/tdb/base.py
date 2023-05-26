@@ -45,7 +45,12 @@ class TDBService(Service, TDBMixin, SchemaMixin):
     @private
     def _ctdb_get_dbid(self, name, options):
         db = ctdb.Ctdb(ctdb.Client(), f'{name}.tdb', os.O_CREAT)
-        db.attach(ctdb.DB_PERSISTENT)
+        try:
+            db.attach(ctdb.DB_PERSISTENT)
+        except Exception:
+            self.logger.error("XXX: failed to attach %s", name)
+            raise
+
         return db.db_id
 
     @private

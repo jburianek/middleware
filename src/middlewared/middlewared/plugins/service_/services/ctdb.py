@@ -19,8 +19,11 @@ class CtdbService(SimpleService):
     async def after_start(self):
         self.middleware.logger.debug("XXX: entered after start")
         await self.middleware.call('ctdb.event.scripts.init')
+        self.middleware.logger.debug("XXX: setup public ips")
         await self.middleware.call('ctdb.setup.public_ip_file')
+        self.middleware.logger.debug("XXX: reset HA mode")
         await self.middleware.call('smb.reset_smb_ha_mode')
+        self.middleware.logger.debug("XXX: generate SMB")
         await self.middleware.call('etc.generate', 'smb')
         self.middleware.logger.debug("XXX: finished after start")
 
