@@ -38,6 +38,7 @@ class ClusterEventsApplication(object):
                 elif event == 'CLJOBS_PROCESS':
                     await self.middleware.call(method)
 
+                self.middleware.logger.debug("XXX: finished processing event for %s", method)
                 if data.pop('forward', False):
                     # means the request originated from localhost
                     # so we need to forward it out to the other
