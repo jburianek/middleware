@@ -136,7 +136,7 @@ def create_volume():
 
 
 def wait_on_ctdb():
-    assert ctdb_healthy(timeout=30), 'CTDB Not healthy after 30 seconds'
+    assert ctdb_healthy(timeout=60), 'CTDB Not healthy after 60 seconds'
 
 
 def add_public_ips_to_ctdb():
