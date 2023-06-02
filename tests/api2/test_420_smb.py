@@ -456,21 +456,54 @@ def test_043_recyclebin_functional_test_subdir(request, smb_config):
     results = PUT("/smb/", smb_config['global'])
     assert results.status_code == 200, results.text
 
+    # basic tests of recyclebin operations
     with create_dataset(tmp_ds, {'share_type': 'SMB'}):
         results = SSH_TEST(f'mkdir {tmp_ds_path}', user, password, ip)
         assert results['result'] is True, f'out: {results["output"]}, err: {results["stderr"]}'
 
         with smb_share(tmp_ds_path, {
             'name': 'recycle_test',
+            'purpose': 'NO_PRESET',
             'recyclebin': True
         } | smb_config['share']) as s:
             with smb_connection(
                 host=ip,
-                share=SMB_NAME,
+                share='recycle_test'
                 username='shareuser',
                 password='testing',
             ) as c:
                 do_recycle_ops(c)
+
+    # more abusive test where first TCON op is opening file in subdir to delete
+    with create_dataset(tmp_ds, {'share_type': 'SMB'}):
+        ops = [
+            f'mkdir {tmp_ds_path}',
+            f'mkdir {tmp_ds_path}/subdir',
+            f'touch {tmp_ds_path}/subdir/testfile',
+            f'chown shareuser {tmp_ds_path}/subdir/testfile',
+        ]
+        results = SSH_TEST(';'.join(ops), user, password, ip)
+        assert results['result'] is True, f'out: {results["output"]}, err: {results["stderr"]}'
+
+        with smb_share(tmp_ds_path, {
+            'name': 'recycle_test',
+            'purpose': 'NO_PRESET',
+            'recyclebin': True
+        } | smb_config['share']) as s:
+            with smb_connection(
+                host=ip,
+                share='recycle_test'
+                username='shareuser',
+                password='testing',
+            ) as c:
+                fd = c.create_file('subdir/testfile', 'w')
+                c.write(fd, b'boo')
+                c.close(fd, True)
+
+                fd = c.create_file('.recycle/shareuser/subdir/testfile', 'r')
+                val = c.read(fd, 0, 3)
+                c.close(fd)
+                assert val == b'boo'
 
 
 @windows_host_cred
