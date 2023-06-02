@@ -468,7 +468,7 @@ def test_043_recyclebin_functional_test_subdir(request, smb_config):
         } | smb_config['share']) as s:
             with smb_connection(
                 host=ip,
-                share='recycle_test'
+                share='recycle_test',
                 username='shareuser',
                 password='testing',
             ) as c:
@@ -492,7 +492,7 @@ def test_043_recyclebin_functional_test_subdir(request, smb_config):
         } | smb_config['share']) as s:
             with smb_connection(
                 host=ip,
-                share='recycle_test'
+                share='recycle_test',
                 username='shareuser',
                 password='testing',
             ) as c:
