@@ -12,7 +12,7 @@ from samba import param
 
 from middlewared.common.attachment import LockableFSAttachmentDelegate
 from middlewared.common.listen import SystemServiceListenMultipleDelegate
-from middlewared.schema import Bool, Dict, IPAddr, List, Str, Int, Patch
+from middlewared.schema import Bool, Dict, IPAddr, List, Ref, returns, SID, Str, Int, Patch
 from middlewared.schema import Path as SchemaPath
 from middlewared.service import accepts, job, private, SharingService
 from middlewared.service import TDBWrapConfigService, ValidationErrors, filterable
@@ -1775,6 +1775,138 @@ class SharingSMBService(SharingService):
         combinations are often non-obvious, but beneficial in these scenarios.
         """
         return {x.name: x.value for x in SMBSharePreset}
+
+    @accepts(Dict(
+        'smb_share_acl',
+        Str('share_name', required=True),
+        List('share_acl', items=[
+            Dict(
+                'aclentry',
+                SID('ae_who_sid', default=None),
+                Dict(
+                    'ae_who_id',
+                    Str('id_type', enum=['USER', 'GROUP', 'BOTH']),
+                    Int('id')
+                ),
+                Str('ae_perm', enum=['FULL', 'CHANGE', 'READ'], required=True),
+                Str('ae_type', enum=['ALLOWED', 'DENIED'], required=True)
+            ),
+        ], default=[{'ae_who_sid': 'S-1-1-0', 'ae_perm': 'FULL', 'ae_type': 'ALLOWED'}]),
+        register=True
+    ))
+    @returns(Ref('smb_share_acl'))
+    async def setacl(self, data):
+        """
+        Set an ACL on `share_name`. This only impacts access through the SMB protocol.
+        Either ae_who_sid or ae_who_id must be specified for each ACL entry in the
+        `share_acl`. If both are specified, then ae_who_sid will be used.
+
+        `share_name` the name of the share
+
+        `share_acl` a list of ACL entries (dictionaries) with the following keys:
+
+        `ae_who_sid` who the ACL entry applies to expressed as a Windows SID
+
+        `ae_who_id` Unix ID information for user or group to which the ACL entry applies.
+
+        `ae_perm` string representation of the permissions granted to the user or group.
+        `FULL` grants read, write, execute, delete, write acl, and change owner.
+        `CHANGE` grants read, write, execute, and delete.
+        `READ` grants read and execute.
+
+        `ae_type` can be ALLOWED or DENIED.
+        """
+        verrors = ValidationErrors()
+
+        normalized_acl = []
+        for idx, entry in enumerate(data['share_acl']):
+            normalized_entry = {
+                'ae_perm': entry['ae_perm'],
+                'ae_type': entry['ae_type'],
+                'ae_who_sid': entry.get('ae_who_sid')
+            }
+
+            if normalized_entry['ae_who_sid']:
+                normalized_acl.append(normalized_entry)
+                continue
+
+            if not (ae_who_id := entry.get('ae_who_id')):
+                verrors.add(
+                    f'sharing_smb_setacl.share_acl.{idx}.sid',
+                    'Either a SID or Unix ID must be specified for ACL entry.'
+                )
+                continue
+
+            sid = await self.middleware.call('idmap.unixid_to_sid', ae_who_id)
+            if (sid is None):
+                verrors.add(
+                    f'sharing_smb_setacl.share_acl.{idx}.ae_who_id',
+                    'User or group does not exist.'
+                )
+                continue
+
+            normalized_entry['ae_who_sid'] = sid
+            normalized_acl.append(normalized_entry)
+
+        if data['share_name'].upper() == 'HOMES':
+            share_filter = [['home', '=', True]]
+        else:
+            share_filter = [['name', 'C=', data['share_name']]]
+
+        try:
+            await self.middleware.call('sharing.smb.query', share_filter, {'get': True})
+        except MatchNotFound:
+            verrors.add(
+                'smb_share_acl.share_name',
+                'Share does not exist'
+            )
+
+        verrors.check()
+        if not normalized_acl:
+            await self.middleware.call('smb.sharesec._delete', data['share_name'])
+        else:
+            await self.middleware.call('smb.sharesec.setacl', {
+                'share_name': data['share_name'],
+                'share_acl': normalized_acl
+            })
+        return await self.getacl({'share_name': data['share_name']})
+
+    @accepts(Dict('smb_getacl', Str('share_name', required=True)))
+    @returns(Ref('smb_share_acl'))
+    async def getacl(self, data):
+        verrors = ValidationErrors()
+
+        if data['share_name'].upper() == 'HOMES':
+            share_filter = [['home', '=', True]]
+        else:
+            share_filter = [['name', 'C=', data['share_name']]]
+
+        try:
+            await self.middleware.call('sharing.smb.query', share_filter, {'get': True})
+        except MatchNotFound:
+            verrors.add(
+                'sharing_smb_getacl.share_name',
+                'Share does not exist'
+            )
+
+        verrors.check()
+
+        acl = await self.middleware.call(
+            'smb.sharesec.getacl', data['share_name'], {'resolve_sids': False}
+        )
+        sids = set([x['ae_who_sid'] for x in acl['share_acl']])
+        conv = await self.middleware.call('idmap.convert_sids', list(sids))
+        for entry in acl['share_acl']:
+            if not (unix_entry := conv['mapped'].get(entry['ae_who_sid'])):
+                entry['ae_who_id'] = None
+                continue
+
+            entry['ae_who_id'] = {
+                'id_type': unix_entry['type'],
+                'id': unix_entry['id']
+            }
+
+        return acl
 
     @private
     @job(lock='sync_smb_registry')

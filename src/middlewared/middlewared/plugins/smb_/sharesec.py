@@ -36,7 +36,6 @@ class ShareSec(CRUDService):
     class Config:
         namespace = 'smb.sharesec'
         cli_namespace = 'sharing.smb.sharesec'
-        private = True
 
     tdb_options = {
         'backend': 'CUSTOM',
