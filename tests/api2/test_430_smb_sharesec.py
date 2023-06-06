@@ -6,17 +6,12 @@ from pytest_dependency import depends
 apifolder = os.getcwd()
 sys.path.append(apifolder)
 from assets.REST.pool import dataset
-from protocols import smb_connection, smb_share
+from middwared.test.integration.assets.smb import smb_share
 from functions import PUT, POST, GET, DELETE, SSH_TEST
 from functions import make_ws_request, wait_on_job
 from auto_config import pool_name, user, password, ip, dev_test
 # comment pytestmark for development testing with --dev-test
 pytestmark = pytest.mark.skipif(dev_test, reason='Skipping for test development testing')
-
-share_name = "my_sharesec"
-dataset = f"{pool_name}/smb-sharesec"
-dataset_url = dataset.replace('/', '%2F')
-share_path = "/mnt/" + dataset
 
 Guests = {
     "domain": "BUILTIN",
@@ -43,14 +38,13 @@ def setup_smb_share(request):
         "smb-sharesec",
         options={'share_type': 'SMB'},
     ) as ds:
-        with smb_share(ds['mountpoint'], {'name': SMB_NAME}) as share:
+        with smb_share(ds['mountpoint'], "my_sharesec") as share:
             share_info = share
             yield share
 
 
 @pytest.mark.dependency(name="sharesec_initialized")
-def test_02_initialize_share(set_smb_share):
-    depends(request, ["pool_04"], scope="session")
+def test_02_initialize_share(setup_smb_share):
     results = POST('/sharing/smb/sharesec/', {
         'share_name': share_info['name']
     })
