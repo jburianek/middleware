@@ -1782,6 +1782,7 @@ class SharingSMBService(SharingService):
         List('share_acl', items=[
             Dict(
                 'aclentry',
+                Str('ae_who_str'),
                 SID('ae_who_sid', default=None),
                 Dict(
                     'ae_who_id',
@@ -1798,8 +1799,9 @@ class SharingSMBService(SharingService):
     async def setacl(self, data):
         """
         Set an ACL on `share_name`. This only impacts access through the SMB protocol.
-        Either ae_who_sid or ae_who_id must be specified for each ACL entry in the
-        `share_acl`. If both are specified, then ae_who_sid will be used.
+        Either ae_who_sid, ae_who_id must, ae_who_str be specified for each ACL entry in the
+        share_acl. If multiple are specified, preference is in the following order: SID,
+        unix id, name.
 
         `share_name` the name of the share
 
@@ -1809,10 +1811,12 @@ class SharingSMBService(SharingService):
 
         `ae_who_id` Unix ID information for user or group to which the ACL entry applies.
 
+        `ae_who_str` name of user or group for which the ACL entry applies
+
         `ae_perm` string representation of the permissions granted to the user or group.
-        `FULL` grants read, write, execute, delete, write acl, and change owner.
-        `CHANGE` grants read, write, execute, and delete.
-        `READ` grants read and execute.
+        FULL - grants read, write, execute, delete, write acl, and change owner.
+        CHANGE - grants read, write, execute, and delete.
+        READ - grants read and execute.
 
         `ae_type` can be ALLOWED or DENIED.
         """
@@ -1820,32 +1824,45 @@ class SharingSMBService(SharingService):
 
         normalized_acl = []
         for idx, entry in enumerate(data['share_acl']):
+            sid = None
+
             normalized_entry = {
                 'ae_perm': entry['ae_perm'],
                 'ae_type': entry['ae_type'],
                 'ae_who_sid': entry.get('ae_who_sid')
             }
 
+            if not set(entry.keys()) & set(['ae_who_str', 'ae_who_id', 'ae_who_sid']):
+                verrors.add(
+                    f'sharing_smb_setacl.share_acl.{idx}.sid',
+                    'Either a SID, Unix ID, or name must be specified for ACL entry.'
+                )
+                continue
+
             if normalized_entry['ae_who_sid']:
                 normalized_acl.append(normalized_entry)
                 continue
 
-            if not (ae_who_id := entry.get('ae_who_id')):
-                verrors.add(
-                    f'sharing_smb_setacl.share_acl.{idx}.sid',
-                    'Either a SID or Unix ID must be specified for ACL entry.'
-                )
-                continue
+            if ae_who_id := entry.get('ae_who_id'):
+                sid = await self.middleware.call('idmap.unixid_to_sid', ae_who_id)
+                if sid is None:
+                    verrors.add(
+                        f'sharing_smb_setacl.share_acl.{idx}.ae_who_id',
+                        'User or group does not exist.'
+                    )
+                    continue
+                normalized_entry['ae_who_sid'] = sid
+                normalized_acl.append(normalized_entry)
 
-            sid = await self.middleware.call('idmap.unixid_to_sid', ae_who_id)
-            if (sid is None):
+            sid_info = await self.middleware.call('idmap.name_to_sid', entry['ae_who_str'])
+            if sid_info is None:
                 verrors.add(
-                    f'sharing_smb_setacl.share_acl.{idx}.ae_who_id',
+                    f'sharing_smb_setacl.share_acl.{idx}.ae_who_str',
                     'User or group does not exist.'
                 )
                 continue
 
-            normalized_entry['ae_who_sid'] = sid
+            normalized_entry['ae_who_sid'] = sid_info['sid']
             normalized_acl.append(normalized_entry)
 
         if data['share_name'].upper() == 'HOMES':
@@ -1905,6 +1922,12 @@ class SharingSMBService(SharingService):
                 'id_type': unix_entry['type'],
                 'id': unix_entry['id']
             }
+
+            entry['ae_who_str'] = await self.middleware.call(
+                'idmap.id_to_name',
+                unix_enty['id'],
+                unix_entry['type']
+            )
 
         return acl
 
