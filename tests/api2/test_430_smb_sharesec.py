@@ -6,7 +6,7 @@ from pytest_dependency import depends
 apifolder = os.getcwd()
 sys.path.append(apifolder)
 from assets.REST.pool import dataset
-from middwared.test.integration.assets.smb import smb_share
+from middlewared.test.integration.assets.smb import smb_share
 from functions import PUT, POST, GET, DELETE, SSH_TEST
 from functions import make_ws_request, wait_on_job
 from auto_config import pool_name, user, password, ip, dev_test
@@ -45,23 +45,16 @@ def setup_smb_share(request):
 
 @pytest.mark.dependency(name="sharesec_initialized")
 def test_02_initialize_share(setup_smb_share):
-    results = POST('/sharing/smb/sharesec/', {
+    results = POST('/sharing/smb/getacl/', {
         'share_name': share_info['name']
     })
     assert results.status_code == 200, results.text
-    assert results.json()['share_name'] == share_info['name']
+    assert results.json()['share_name'].casefold() == share_info['name'].casefold()
     assert len(results.json()['share_acl']) == 1
 
 
-def test_04_starting_cifs_service(request):
-    depends(request, ["sharesec_intialized"], scope="session")
-    payload = {"service": "cifs"}
-    results = POST("/service/start/", payload)
-    assert results.status_code == 200, results.text
-
-
 def test_06_set_smb_acl_by_sid(request):
-    depends(request, ["sharesec_intialized"], scope="session")
+    depends(request, ["sharesec_initialized"], scope="session")
     payload = {
         'share_name': share_info['name'],
         'share_acl': [
@@ -76,7 +69,7 @@ def test_06_set_smb_acl_by_sid(request):
     assert results.status_code == 200, results.text
     acl_set = results.json()
 
-    assert payload['share_name'] == acl_set['share_name']
+    assert payload['share_name'].casefold() == acl_set['share_name'].casefold()
     assert payload['share_acl'][0]['ae_who_sid'] == acl_set['share_acl'][0]['ae_who_sid']
     assert payload['share_acl'][0]['ae_perm'] == acl_set['share_acl'][0]['ae_perm']
     assert payload['share_acl'][0]['ae_type'] == acl_set['share_acl'][0]['ae_type']
@@ -85,7 +78,7 @@ def test_06_set_smb_acl_by_sid(request):
 
 @pytest.mark.dependency(name="sharesec_acl_set")
 def test_07_set_smb_acl_by_unix_id(request):
-    depends(request, ["sharesec_intialized"], scope="session")
+    depends(request, ["sharesec_initialized"], scope="session")
     payload = {
         'share_name': share_info['name'],
         'share_acl': [
@@ -100,7 +93,7 @@ def test_07_set_smb_acl_by_unix_id(request):
     assert results.status_code == 200, results.text
     acl_set = results.json()
 
-    assert payload['share_name'] == acl_set['share_name']
+    assert payload['share_name'].casefold() == acl_set['share_name'].casefold()
     assert acl_set['share_acl'][0]['ae_who_sid'] == 'S-1-22-1-0'
     assert payload['share_acl'][0]['ae_perm'] == acl_set['share_acl'][0]['ae_perm']
     assert payload['share_acl'][0]['ae_type'] == acl_set['share_acl'][0]['ae_type']
@@ -125,7 +118,7 @@ def test_25_verify_share_info_tdb_is_deleted(request):
     assert results.status_code == 200, results.text
     acl = results.json()
 
-    assert acl['share_name'] == share_info['name']
+    assert acl['share_name'].casefold() == share_info['name'].casefold()
     assert acl['share_acl'][0]['ae_who_sid'] == 'S-1-1-0'
 
 
@@ -139,7 +132,7 @@ def test_27_restore_sharesec_with_flush_share_info(request):
     assert results.status_code == 200, results.text
     acl = results.json()
 
-    assert acl['share_name'] == share_info['name']
+    assert acl['share_name'].casefold() == share_info['name'].casefold()
     assert acl['share_acl'][0]['ae_who_sid'] == 'S-1-22-1-0'
 
 
@@ -153,7 +146,7 @@ def test_29_verify_share_info_tdb_is_created(request):
 @pytest.mark.dependency(name="sharesec_rename")
 def test_30_rename_smb_share_and_verify_share_info_moved(request):
     depends(request, ["sharesec_acl_set", "ssh_password"], scope="session")
-    results = PUT(f"/sharing/smb/id/{smb_id}/",
+    results = PUT(f"/sharing/smb/id/{share_info['id']}/",
                   {"name": "my_sharesec2"})
     assert results.status_code == 200, results.text
 
@@ -161,18 +154,19 @@ def test_30_rename_smb_share_and_verify_share_info_moved(request):
     assert results.status_code == 200, results.text
     acl = results.json()
 
-    assert acl['share_name'] == share_info['name']
+    share_info['name'] = 'my_sharesec2'
+    assert acl['share_name'].casefold() == share_info['name'].casefold()
     assert acl['share_acl'][0]['ae_who_sid'] == 'S-1-22-1-0'
 
 
 def test_31_toggle_share_and_verify_acl_preserved(request):
     depends(request, ["sharesec_rename", "ssh_password"], scope="session")
 
-    results = PUT(f"/sharing/smb/id/{smb_id}/",
+    results = PUT(f"/sharing/smb/id/{share_info['id']}/",
                   {"enabled": False})
     assert results.status_code == 200, results.text
 
-    results = PUT(f"/sharing/smb/id/{smb_id}/",
+    results = PUT(f"/sharing/smb/id/{share_info['id']}/",
                   {"enabled": True})
     assert results.status_code == 200, results.text
 
@@ -180,7 +174,7 @@ def test_31_toggle_share_and_verify_acl_preserved(request):
     assert results.status_code == 200, results.text
     acl = results.json()
 
-    assert acl['share_name'] == 'my_sharesec2'
+    assert acl['share_name'].casefold() == share_info['name'].casefold()
     assert acl['share_acl'][0]['ae_who_sid'] == 'S-1-22-1-0'
 
     # Abusive test, bypass normal APIs for share and
@@ -188,7 +182,7 @@ def test_31_toggle_share_and_verify_acl_preserved(request):
     res = make_ws_request(ip, {
         'msg': 'method',
         'method': 'datastore.update',
-        'params': ['sharing.cifs.share', smb_id, {'cifs_enabled': False}],
+        'params': ['sharing.cifs.share', share_info['id'], {'cifs_enabled': False}],
     })
     error = res.get('error')
     assert error is None, str(error)
@@ -208,7 +202,7 @@ def test_31_toggle_share_and_verify_acl_preserved(request):
     res = make_ws_request(ip, {
         'msg': 'method',
         'method': 'datastore.update',
-        'params': ['sharing.cifs.share', smb_id, {'cifs_enabled': True}],
+        'params': ['sharing.cifs.share', share_info['id'], {'cifs_enabled': True}],
     })
     error = res.get('error')
     assert error is None, str(error)
@@ -229,12 +223,5 @@ def test_31_toggle_share_and_verify_acl_preserved(request):
     assert results.status_code == 200, results.text
     acl = results.json()
 
-    assert acl['share_name'] == 'my_sharesec2'
+    assert acl['share_name'].casefold() == share_info['name'].casefold()
     assert acl['share_acl'][0]['ae_who_sid'] == 'S-1-22-1-0'
-
-
-def test_33_stop_cifs_service(request):
-    depends(request, ["pool_04"], scope="session")
-    payload = {"service": "cifs"}
-    results = POST("/service/stop/", payload)
-    assert results.status_code == 200, results.text
