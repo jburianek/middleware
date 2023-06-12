@@ -22,7 +22,7 @@ SMB_PWD = "smb1234#!@"
 @pytest.fixture(scope="module")
 def setup_smb_share(request):
     with dataset('rpc_test', data={'share_type': 'SMB'}) as ds:
-        with smb_share(os.path.join('/mnt', ds), "RPC_TEST", {"abe": True}) as s:
+        with smb_share(os.path.join('/mnt', ds), "RPC_TEST", {"abe": True, "purpose": "NO_PRESET"}) as s:
             yield {'dataset': ds, 'share': s}
 
 @pytest.fixture(autouse=True, scope="function")
