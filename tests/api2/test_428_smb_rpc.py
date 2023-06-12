@@ -96,4 +96,4 @@ def test_003_access_based_share_enum(setup_smb_user, setup_smb_share):
 
     with MS_RPC(username=SMB_USER, password=SMB_PWD, host=ip) as hdl:
         shares = hdl.shares()
-        assert len(shares) == 0, str({"enum": shares, "shares": results.json()})
+        assert len(shares) == 1, str({"enum": shares, "shares": results.json()})
