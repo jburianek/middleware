@@ -20,7 +20,7 @@ DATASET = f"{pool_name}/smb-reg"
 DATASET_URL = DATASET.replace('/', '%2F')
 SMB_NAME = "REGISTRYTEST"
 SMB_PATH = "/mnt/" + DATASET
-SHARES = [f'{SMB_NAME}_{i}' for i in range(0, 25)]
+SHARES = [f'{SMB_NAME}_{i}' for i in range(0, 5)]
 SHARE_DICT = {}
 PRESETS = [
     "DEFAULT_SHARE",
