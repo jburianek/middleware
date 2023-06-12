@@ -6,7 +6,7 @@ import os
 apifolder = os.getcwd()
 sys.path.append(apifolder)
 from auto_config import (ip, dev_test, pool_name)
-from functions import GET, PUT
+from functions import GET, POST
 from middlewared.test.integration.assets.account import user
 from middlewared.test.integration.assets.smb import smb_share
 from middlewared.test.integration.assets.pool import dataset
@@ -88,7 +88,7 @@ def test_003_access_based_share_enum(setup_smb_user, setup_smb_share):
             }
         ]
     }
-    results = PUT("/sharing/smb/setacl", payload)
+    results = POST("/sharing/smb/setacl", payload)
     assert results.status_code == 200, results.text
 
     with MS_RPC(username=SMB_USER, password=SMB_PWD, host=ip) as hdl:
