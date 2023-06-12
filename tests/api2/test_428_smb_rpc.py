@@ -91,6 +91,9 @@ def test_003_access_based_share_enum(setup_smb_user, setup_smb_share):
     results = POST("/sharing/smb/setacl", payload)
     assert results.status_code == 200, results.text
 
+    results = GET("/sharing/smb")
+    assert results.status_code == 200, results.text
+
     with MS_RPC(username=SMB_USER, password=SMB_PWD, host=ip) as hdl:
         shares = hdl.shares()
-        assert len(shares) == 0, str(shares)
+        assert len(shares) == 0, str({"enum": shares, "shares": results.json()})
